@@ -89,7 +89,9 @@ func TestHTTPTraceKeepsOuterHooksAndReuse(t *testing.T) {
 			t.Fatal("lost attempts")
 		}
 		for _, a := range s.Attempts {
-			if !a.BodyEOF || a.ResponseBytes != 2 || a.Events["request_written"] == 0 || a.Events["first_byte"] == 0 {
+			_, requestWritten := a.Events["request_written"]
+			_, firstByte := a.Events["first_byte"]
+			if !a.BodyEOF || a.ResponseBytes != 2 || !requestWritten || !firstByte {
 				t.Fatalf("incomplete trace %+v", a)
 			}
 		}

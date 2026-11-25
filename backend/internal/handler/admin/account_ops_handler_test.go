@@ -74,7 +74,7 @@ func TestAccountOpsInvalidConfigurationReturnsSafe400WithoutWrites(t *testing.T)
 	}{
 		{"amount rule on OAuth", `,"balance_thresholds":[{"account_id":41,"enabled":true,"threshold":5,"unit":"USD"}]`, service.AccountTypeOAuth},
 		{"quota rule on API key", `,"quota_thresholds":[{"account_id":41,"enabled":true,"threshold_percent":80,"window":"any"}]`, service.AccountTypeAPIKey},
-		{"invalid recipient", `,"recipient":"canary-secret@example.test,another@example.test"`, service.AccountTypeAPIKey},
+		{"invalid recipient", `,"recipient":"canary-secret@example.test,not-an-email"`, service.AccountTypeAPIKey},
 		{"invalid official URL", `,"webhooks":[{"id":"robot","provider":"wecom","url":"https://bad.example/canary-secret?key=private-canary"}]`, service.AccountTypeAPIKey},
 		{"negative threshold", `,"balance_thresholds":[{"account_id":41,"enabled":true,"threshold":-1,"unit":"USD"}]`, service.AccountTypeAPIKey},
 	} {
@@ -344,5 +344,20 @@ func TestAccountOpsGroupedBatchHandlerIsAtomicAndRejectsAmbiguousPayloads(t *tes
 				}
 			}
 		})
+	}
+}
+
+func TestAccountOpsBalanceNotificationRequiresExplicitBoolean(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":"false"}`} {
+		settings := &opsHandlerWritableSettings{}
+		svc := service.NewAccountOpsService(settings, opsHandlerQueue{}, nil)
+		handler := NewAccountOpsHandler(svc, nil)
+		router := gin.New()
+		router.PUT("/accounts/:id/balance-notification", handler.SetBalanceLowNotification)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest("PUT", "/accounts/7/balance-notification", strings.NewReader(body)))
+		require.Equal(t, 400, rec.Code)
+		require.Zero(t, settings.writes)
 	}
 }

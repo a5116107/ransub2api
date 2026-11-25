@@ -37,6 +37,10 @@ var supportedGrokVoiceHTTPEndpoints = map[string]struct{}{
 // The response is intentionally passed through because TTS returns audio bytes
 // while STT returns JSON and xAI may add format-specific headers.
 func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Context, account *Account, endpoint string, body []byte, contentType string) (*OpenAIForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	if s == nil || account == nil {
 		return nil, fmt.Errorf("grok voice service/account is required")
 	}
@@ -91,7 +95,7 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 	if account.IsGrokOAuth() && isGrokCLIProxyTarget(targetURL) {
 		applyGrokCLIHeaders(req.Header)
 	}
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverridesWithContext(req.Context(), req.Header)
 	// Voice HTTP has no availability wire scope yet. When an account has an
 	// active availability rule, fail closed before the physical send instead of
 	// treating an ordinary text probe as voice evidence.
@@ -256,7 +260,7 @@ func (s *OpenAIGatewayService) openGrokVoiceWebSocket(ctx context.Context, accou
 	if account.IsGrokOAuth() && isGrokCLIProxyTarget(u.String()) {
 		applyGrokCLIHeaders(headers)
 	}
-	account.ApplyHeaderOverrides(headers)
+	account.ApplyHeaderOverridesWithContext(ctx, headers)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()

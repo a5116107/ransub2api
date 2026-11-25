@@ -72,7 +72,7 @@ func TestAvailabilityTransportFailureAtFinalSend(t *testing.T) {
 				require.NoError(t, err)
 				repo := &immediateQualityAccountRepo{}
 				cfg := rawChatCompletionsTestConfig()
-				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				account := &Account{ID: 42, Type: AccountTypeAPIKey, Platform: PlatformOpenAI}
 				var response *http.Response
 				switch path {
@@ -117,7 +117,7 @@ func TestAvailabilityBPSDirectRetryObservesFinalSend(t *testing.T) {
 	for _, scenario := range []string{"408", "503", "broken_body", "transport", "local_rejection", "probe"} {
 		t.Run(scenario, func(t *testing.T) {
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			account := excelAccount()
 			calls := 0
 			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
@@ -183,7 +183,7 @@ func TestAvailabilityBPSDirectRetryObservesFinalSend(t *testing.T) {
 
 func TestAvailabilityBPSMainSendReportsFaultOnlyOnce(t *testing.T) {
 	repo := &immediateQualityAccountRepo{}
-	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	account := excelAccount()
 	upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Request: req, Header: make(http.Header), Body: http.NoBody}, nil
@@ -211,7 +211,7 @@ func TestAvailabilityBPSManagedDirectRetryKeepsGrantScope(t *testing.T) {
 			require.NoError(t, err)
 			parent.Extra = map[string]any{}
 			repo := &managedFaultAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusRequestTimeout, Request: req, Header: make(http.Header), Body: http.NoBody}, nil
 			}}
@@ -245,7 +245,7 @@ func TestAvailabilityBPSIncompleteStreamDoesNotFabricateUpstream5xx(t *testing.T
 	for _, scenario := range []string{"missing_terminal", "broken_body", "complete", "probe", "canceled", "semantic_503"} {
 		t.Run(scenario, func(t *testing.T) {
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if scenario == "probe" {
@@ -308,7 +308,7 @@ func TestAvailabilityBPSManagedIncompleteStreamUsesWireScope(t *testing.T) {
 			require.NoError(t, err)
 			parent.Extra = map[string]any{}
 			repo := &managedFaultAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			svc := openAIClientToolsTestService(nil)
 			svc.excelOAuthReauth, svc.rateLimitService = reauth, limiter
 			sends := 0
@@ -356,7 +356,7 @@ func TestAvailabilityBPSManagedIncompleteStreamUsesWireScope(t *testing.T) {
 
 func TestAvailabilityBPSReadFaultTracksCurrentAttempt(t *testing.T) {
 	repo := &immediateQualityAccountRepo{}
-	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	tracker := &availabilityReadFaultTracker{}
 	ctx := context.WithValue(t.Context(), availabilityReadFaultTrackerKey{}, tracker)
 	upstream := &bpsTestUpstream{send: func(req *http.Request, _ string) (*http.Response, error) {
@@ -393,7 +393,7 @@ func TestAvailabilityBPSReadFaultTracksCurrentAttempt(t *testing.T) {
 		require.NoError(t, err)
 		parent.Extra = map[string]any{}
 		repo := &managedFaultAccountRepo{}
-		limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		tracker := &availabilityReadFaultTracker{}
 		ctx := context.WithValue(t.Context(), availabilityReadFaultTrackerKey{}, tracker)
 		sends := 0
@@ -460,7 +460,7 @@ func TestAvailabilityBPSIncompleteStreamRealHTTP(t *testing.T) {
 			target, err := url.Parse(server.URL)
 			require.NoError(t, err)
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			svc := openAIClientToolsTestService(nil)
 			svc.httpUpstream, svc.rateLimitService = &accountTestHTTPUpstream{target: target}, limiter
 			t.Cleanup(func() { require.NoError(t, svc.CloseExcelBPSImages()) })
@@ -482,7 +482,7 @@ func TestAvailabilityTransportEvidenceBoundary(t *testing.T) {
 	for _, outcome := range []string{"unobserved", "pool_wait", "dns", "connect", "tls", "reused", "write", "headers", "local_capacity", "local_policy", "local_admission", "canceled_error", "canceled_context", "expired_context", "probe", "response_and_error", "success"} {
 		t.Run(outcome, func(t *testing.T) {
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if outcome == "probe" {
@@ -589,7 +589,7 @@ func TestAvailabilityWSHandshakeTransportFailure(t *testing.T) {
 				}
 				cfg := passthroughLifecycleConfig()
 				repo := &immediateQualityAccountRepo{}
-				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				svc := newPassthroughLifecycleService(cfg, newStagedPassthroughConn())
 				svc.rateLimitService = limiter
 				account := passthroughLifecycleAccount()
@@ -638,7 +638,7 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 			for _, outcome := range []string{"empty", "partial", "complete", "canceled", "probe"} {
 				t.Run(fmt.Sprintf("%s/async=%t/%s", path, async, outcome), func(t *testing.T) {
 					repo := &immediateQualityAccountRepo{}
-					limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+					limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 					cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
 					if async {
 						cfg.Gateway.StreamKeepaliveInterval = 60
@@ -663,6 +663,8 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 							payload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"usage\":{\"input_tokens\":1}}}\n\n"
 						}
 						if outcome == "complete" {
+							payload += "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+							payload += "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n\n"
 							payload += "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 						}
 					}
@@ -729,7 +731,7 @@ func TestAvailabilityProtocolMissingTerminalInvalidates(t *testing.T) {
 }
 
 func TestAvailabilityAnthropicCompatRequiresStartedStream(t *testing.T) {
-	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"usage\":{\"input_tokens\":1}}}\n\n"
+	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"model\":\"target\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
 	stop := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	delta := "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
 	done := "event: message_stop\ndata: [DONE]\n\n"
@@ -747,14 +749,14 @@ func TestAvailabilityAnthropicCompatRequiresStartedStream(t *testing.T) {
 			{"terminal_delta_then_partial", delta + start, false},
 			{"done_then_partial", done + start, false},
 			{"terminal_then_complete", stop + start + stop, true},
-			{"terminal_delta_then_complete", delta + start + delta, true},
-			{"done_then_complete", done + start + done, true},
+			{"terminal_delta_then_complete", delta + start + delta, false},
+			{"done_then_complete", done + start + done, false},
 			{"complete", start + stop, true},
 		} {
 			t.Run(api+"/"+tc.name, func(t *testing.T) {
 				repo := &immediateQualityAccountRepo{}
 				cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
-				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				gateway := &GatewayService{cfg: cfg, rateLimitService: limiter}
 				account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 				recorder := httptest.NewRecorder()
@@ -795,7 +797,7 @@ func TestAvailabilityAnthropicCompatRequiresStartedStream(t *testing.T) {
 
 func TestAvailabilityProtocolDisconnectExclusions(t *testing.T) {
 	repo := &immediateQualityAccountRepo{}
-	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	limiter.observeAvailabilityIncomplete(t.Context(), &Account{ID: 42, Type: AccountTypeAPIKey}, true)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -822,7 +824,7 @@ func TestAvailabilityAnthropicBufferedFailureNeverPublishesSuccess(t *testing.T)
 		} {
 			t.Run(api+"/"+tc.name, func(t *testing.T) {
 				repo := &immediateQualityAccountRepo{}
-				limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				gateway := &GatewayService{rateLimitService: limiter}
 				account := &Account{ID: 42, Type: AccountTypeAPIKey}
 				recorder := httptest.NewRecorder()
@@ -843,14 +845,20 @@ func TestAvailabilityAnthropicBufferedFailureNeverPublishesSuccess(t *testing.T)
 				}
 				require.NoError(t, response.Body.Close())
 				require.Error(t, err)
-				require.Nil(t, result, "a partial buffer must not become a billable success")
+				if tc.payload == "" {
+					require.Nil(t, result)
+				} else {
+					require.NotNil(t, result, "metered partial usage must remain billable on failure")
+					require.Equal(t, 3, result.Usage.InputTokens)
+					require.Zero(t, result.Usage.OutputTokens)
+				}
 				if tc.readErr != nil {
 					require.ErrorIs(t, err, tc.readErr)
 				}
 				if tc.wantSSE {
 					var sseErr *sseStreamErrorEventError
 					require.ErrorAs(t, err, &sseErr)
-					require.False(t, c.Writer.Written(), "the existing forwarding layer must handle upstream error events")
+					require.True(t, c.Writer.Written(), "a metered rejection must finish this response, never replay billable work")
 				} else {
 					require.Equal(t, tc.status, recorder.Code)
 				}
@@ -868,7 +876,7 @@ func TestAvailabilityAnthropicBufferedCancellationBoundsIncompleteRead(t *testin
 	body, writer := io.Pipe()
 	defer func() { _ = body.Close(); _ = writer.Close() }()
 	repo := &immediateQualityAccountRepo{}
-	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
@@ -900,7 +908,7 @@ func TestAvailabilityOpenAIBufferedCompletionBoundary(t *testing.T) {
 			defer cancel()
 			cfg := &config.Config{Gateway: config.GatewayConfig{StreamDataIntervalTimeout: 1}}
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			svc := &OpenAIGatewayService{cfg: cfg, rateLimitService: limiter}
 			account := &Account{ID: 42, Type: AccountTypeAPIKey}
 			body, writer := io.Pipe()
@@ -941,7 +949,7 @@ func TestAvailabilityAnthropicBufferedCanceledCompleteRetainsUsage(t *testing.T)
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			gateway := &GatewayService{rateLimitService: limiter}
 			account := &Account{ID: 42, Type: AccountTypeAPIKey}
 			recorder := httptest.NewRecorder()
@@ -956,8 +964,9 @@ func TestAvailabilityAnthropicBufferedCanceledCompleteRetainsUsage(t *testing.T)
 				result, err = gateway.handleResponsesBufferedStreamingResponse(response, c, account, "target", "target", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 			}
 			require.NoError(t, response.Body.Close())
-			require.NoError(t, err)
+			require.ErrorIs(t, err, context.Canceled)
 			require.NotNil(t, result)
+			require.True(t, result.ClientDisconnect)
 			require.Equal(t, 10, result.Usage.InputTokens)
 			require.Equal(t, 5, result.Usage.OutputTokens)
 			require.Zero(t, repo.availabilityCalls)
@@ -983,7 +992,7 @@ func TestAvailabilityNativeWSHTTPReadInvalidates(t *testing.T) {
 			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: upstream})
 			t.Cleanup(pool.Close)
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			svc := &OpenAIGatewayService{cfg: cfg, openaiWSPool: pool, toolCorrector: NewCodexToolCorrector(), rateLimitService: limiter}
 			account := passthroughLifecycleAccount()
 			ctx, cancel := context.WithCancel(t.Context())
@@ -1033,7 +1042,7 @@ func TestAvailabilityNativeWSIngressReadInvalidates(t *testing.T) {
 				t.Cleanup(pool.Close)
 				svc.openaiWSPool = pool
 				repo := &immediateQualityAccountRepo{}
-				svc.rateLimitService = ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				svc.rateLimitService = ProvideRateLimitService(repo, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				account := passthroughLifecycleAccount()
 				account.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 				server, serverErr := startPassthroughLifecycleServer(t, ctx, svc, account)
@@ -1110,7 +1119,7 @@ func TestAvailabilityManagedBusinessFaultRequiresConfirmedWireSource(t *testing.
 			if strings.HasPrefix(scenario, "scoped_error_") {
 				repo.writeErr = errors.New("fixture state transaction failed")
 			}
-			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			route := [32]byte{1, 2, 3}
 			account := &Account{ID: 42, Type: AccountTypeAPIKey, Platform: PlatformOpenAI, AuthConnectionID: "fixture-grant", AuthConnectionRevision: 3,
 				AuthConnectionParentRoute: &route, Credentials: map[string]any{"api_key": "synthetic-token"}}
@@ -1198,7 +1207,7 @@ func TestAvailabilityNon5xxFaultProvider(t *testing.T) {
 			rdb := queuetest.NewClient(mr.Addr())
 			t.Cleanup(func() { _ = rdb.Close() })
 			repo := &immediateQualityAccountRepo{}
-			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, rdb, nil)
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, rdb, nil)
 			t.Cleanup(func() { _ = svc.qualityTrigger.queue.Close() })
 			account := &Account{ID: 42, Type: AccountTypeAPIKey}
 			svc.observeQualityResponse(t.Context(), account, &http.Response{StatusCode: status}, nil)
@@ -1217,7 +1226,7 @@ func TestAvailabilityNon5xxFaultProvider(t *testing.T) {
 
 func TestAvailabilityNon5xxFaultWithoutRedis(t *testing.T) {
 	repo := &immediateQualityAccountRepo{}
-	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
 		for _, status := range []int{401, 408, 429} {
 			svc.observeQualityStatus(t.Context(), &Account{ID: 42, Type: accountType}, status)
@@ -1255,7 +1264,7 @@ func TestAvailabilityResponseBodyFaultClassification(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &immediateQualityAccountRepo{}
-			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if tc.probe {
@@ -1289,7 +1298,7 @@ func TestAvailabilityResponseBodyRealHTTPTruncation(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	repo := &immediateQualityAccountRepo{}
-	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 	response, err := server.Client().Do(request)
@@ -1308,7 +1317,7 @@ func TestAvailabilitySIWCFaultObservation(t *testing.T) {
 	for _, status := range []int{401, 408, 429, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			repo := &immediateQualityAccountRepo{}
-			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			limiter := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			account := ticketTestAccount(901)
 			account.Extra = map[string]any{OpenAISIWCEnabledKey: true}
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: status, Header: make(http.Header), Body: http.NoBody}}
@@ -1340,7 +1349,7 @@ func TestQuality5xxProductionProviderAppliesBeforeReturning(t *testing.T) {
 	rdb := queuetest.NewClient(mr.Addr())
 	defer func() { _ = rdb.Close() }()
 	repo := &immediateQualityAccountRepo{}
-	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, rdb, nil)
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, rdb, nil)
 	require.NotNil(t, svc.qualityTrigger)
 	defer func() { _ = svc.qualityTrigger.queue.Close() }()
 	svc.observeQualityStatus(context.Background(), &Account{ID: 12, Type: AccountTypeOAuth}, 503)
@@ -1369,7 +1378,7 @@ func TestQuality5xxPendingRemoveModelsNotCoveredByOlderFinish(t *testing.T) {
 
 func TestQuality5xxImmediateProtectionWithoutQueue(t *testing.T) {
 	repo := &immediateQualityAccountRepo{}
-	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := ProvideRateLimitService(repo, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.NotNil(t, svc.qualityTrigger)
 	trigger := svc.qualityTrigger
 	account := &Account{ID: 42, Type: AccountTypeAPIKey}
@@ -1387,7 +1396,7 @@ func TestQuality5xxWorkerProviderHasQueue(t *testing.T) {
 	// Exercise provider wiring without starting singleton cron jobs with nil
 	// repositories. Such jobs can outlive this test and panic on a later tick.
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
-	svc := ProvideScheduledTestRunnerService(nil, nil, &AccountTestService{}, &RateLimitService{}, cfg, &QualityJudgeService{}, rdb, nil, &ChannelMonitorV2Service{})
+	svc := ProvideScheduledTestRunnerService(nil, nil, &AccountTestService{}, &RateLimitService{}, cfg, &QualityJudgeService{}, rdb, nil, &ChannelMonitorV2Service{}, nil)
 	t.Cleanup(svc.Stop)
 	require.NotNil(t, svc.qualityTrigger, "worker provider must connect the cross-instance queue")
 	require.Nil(t, svc.cron)

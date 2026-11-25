@@ -2511,3 +2511,45 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 线上已退出的 .9 候选程序精确清理 164335776 bytes，回退程序与备份保留。继承 service/data、历史拒删 scratch、可复用 source/依赖/Go 缓存不删除、不纳入提交或藏入 ignore。STATE、唯一设计与开发 VERSION 原位更新；原 28 项 20 done/8 部分不变，未将 D9 或完整供应池计为完成。稳定分支仅补上线文档，不改变发布应用源码；任务交付身份与终稿稳定测试结果另按实际完成追加。
 - 最终原稳定源码目录实际执行同一首输出配置/恢复命令，STABLE_TIMEOUT_TEST_EXIT=0：27 顶层/29 含子例通过，0 fail/skip，config 2.398s、handler 3.359s、service 11.475s。含原配置环境变量加载、高推理 120/300 分流、首输出超时取消、元数据/心跳保护、输出后不重放及至多一次换线；与开发回归重复覆盖，不合计。gofmt、git diff --check、旧 normalizeCodexPageContext/日志符号零引用及 STATE 8132bytes/94行/检查点681bytes检查通过。
 - 20:47:42 新生产请求记录 9643 提供实际切换证据：账号 7 的上游 429 作为可恢复尝试，随后账号 16 完成，同一个 client_request_id 仅有一条 usage（219921 input / 2161 output），耗时 79.034 秒，最终 HTTP 状态 200；两个账号当前均 active 且 schedulable。此例证明限流后可换线和唯一结算，不代表之前的 BPS 长流故障已恢复；失败尝试是否被上游计费仍未知。证据 recent-recovery.json。
+
+
+### 2026-11-26 D8/D9：v2.25.0 保留生产能力的合并与兼容修复
+
+- 用户确认保留线上流量记录/历史表、余额耗尽预测、旧凭证守护与打票，再迁移到新版能力。唯一工作树 `integration/upstream-stable` 从稳定线 e16505d58 合并 fd354ef87（固定原上游 0fa2cb6ac91effee2a45b933bb44b460f05a8c49），114 个冲突文件已逐项解决；不提升在研自动供应池、不运行构建/测试 CI。
+- 恢复原路由、侧栏、设置、通知模板、定时任务及 Wire 连接；398 迁移保留原流量表和历史，不清 spool。补回 BalanceNotifyService.Stop 的进程退出连接，再用项目 Go 1.27.4 构建 Wire 工具生成既有 wire_gen.go；原安装 Wire 为 Go 1.26、go generate 缺 subcommands 校验项的失败均保留，没有为生成工具改业务依赖。
+- 原位修复新旧流协议兼容：按规范确认 message_start、实际 token usage、消息终态及事件类型；无可观测 usage 不生成幽灵账单，失败流不发成功终态，已经输出不跨账号重放。新增测试的调度快照接入同一个分组仓库，Windows 实例型 Redis 夹具改用独立回环进程；生产利润/分组/会话保护保持失败关闭。
+- HTTP 可读恢复后同步其已校验的 provider 指针；WS 对恢复后的帧、确认证据支持的 plaintext bridge 投影同步同一归属。原生 WS 不再把客户端显式指针当成自动附加指针删除。bridge 新构建守卫在已知不同账号且尚未物理发送时交回既有 unsent-owner 流程；该流程仍验证开关、完成的归属/工具证据和新请求，存储失败及同账号模型/档位/线路变化仍终止。原 bridge guard_live/refusal 两个失败场景已 4 个父子通过事件，零失败/跳过；不作为真实供应商旧任务恢复证明。
+- 归属仓库缺失/读取失败保留错误原因，只有确认的缺失/不匹配按 WS policy violation 返回，临时读取故障仍属暂时不可用。旧缓存包装补齐真实 shared response-owner 能力；历史测试由 v1 字符串断言改为检查 v2 用户/Key/账号/作用域，仍验证旧记录不被覆盖。显式 legacy compatibility 保持原选择边界，默认严格模式不变。
+- 前端全量 `pnpm exec vitest run` 为 652 文件、6790 passed、53 原有 skipped；类型检查与嵌入构建通过。ESLint 首轮一个未用变量警告原位删除，同文件 5 项及定向 ESLint 退出 0。不把原跳过项改成通过。
+- PG14 `-race -tags 'unit integration'` 的流量历史保留/幂等与共享 Redis 竞争 3 项通过，零失败/跳过；隔离 SQL 的 forecast/coupon 25 项、审核检测共享 Key 容量及恢复 5 项通过，夹具数据库按 ID/标签停止。此前缺 TRAFFIC_TEST_POSTGRES_DSN 的跳过已通过原 harness 提供其隔离 DSN 消除。
+- 保留专项 `-race` 为 1165 passed/6 个缺外部 DSN 原 skip；数据库专项另验，不把重叠用例相加为独立场景。Windows 的凭证目录和 cgroup 逃逸用例受符号链接权限限制，同源码测试程序在隔离 Linux 非 root 用户下分别通过；未添加平台 skip。
+- 指纹库元数据失败确认为 autocrlf 改变被嵌入的原始字节：CRLF SHA eeab6ff54d6ffb2b294ebfd6cce25bce387f7a268b66759144f64c16f6c66b9f，原 Git/LF SHA f267d0513aa06981d024ec5394746fceddf44e4e8a75fa6bf8304255f4b32d6d；以精确 .gitattributes LF 规则保留已审阅库，不改期望摘要或模型算法。HTTP 追踪零毫秒是合法时间值，断言改检查事件存在；两包专项 race 退出 0。
+- 清理未引用 isGrokVideoCreateEndpoint、无效赋值、未检查的测试断言/资源退出及格式问题；临时打印/调用栈诊断全部删除。depguard 保留生产禁反向依赖，仅补齐与原注释一致的嵌套 *_test.go 排除，原非规范头大小写测试不改成其他断言。
+- 当前源码扩大回归和不限数量的增量 lint 正在执行；所有失败日志仍保留，未宣称整仓通过。生产进程仍 2.21.0-ransub.9/c8cec584a18135fe，原 PostgreSQL/Redis 容器身份保持。候选提交、PR 同步、生产副本四阶段、发行、排空切换与公网业务各自待验，不用源码测试替代加载/业务证据。原 28 项 20 done/8 部分不变。
+- 本轮 Linux 两个已退出测试程序保留在 H:/Root/DevCache/tmp/sub2api-go/upstream-225-repository.test 与 upstream-225-sysutil.test；首次合并构建与删除的组合命令在创建进程前被宿主拒绝，后续仅执行独立验证，没有换工具删除。历史 12 个 1164 bytes 图片夹具保留，未藏入 ignore、提交或删除。
+
+
+### 2026-11-26 D8/D9：固定基线静态清零及原生 WS 未发送恢复
+
+- 合并提交 5f1a4eb1c 已同步自有 integration/upstream-stable；PR #4 对 production 为 CLEAN/MERGEABLE、无 CI 检查，旧冲突 PR #3 已关闭。候选仍不等于上线；沿原 28 项 20 done/8 部分，不提升开发供应池、不自行合并 PR。
+- 取消 lint 的诊断数量上限后，以固定 e16505d5872b491d97ca16229c155124ffd01f4b 对比再检出 72 项（70 errcheck/2 staticcheck）。42 个测试文件原位使用已有 assertions.Type、资源错误处理及 tagged switch；未减规则、不用移动 HEAD 避开诊断。最终命令在原检查范围加入 basispoints/accountconnectiontiming，保留 unit,integration、concurrency 1、max-issues-per-linter 0/max-same-issues 0/new-from-rev；实际退出 0、0 issues.（upstream-225-go-lint-delivery.txt）。相关七包 go vet -p 1 -tags unit 退出 0（upstream-225-delivery-vet.txt）。
+- 完整源码输出的实际事件为 54592 pass/256 skip/43 fail，9 包失败；不得作为全仓绿证。Anthropic 连接夹具缺 message_start 与合法 delta/usage，以完整原生事件修复，不放宽生产检测。BPS 对明确空白 service_tier 原位拒绝，缺失/null 兼容保持，增加纯空白边界。原 WS 自动降级测试同时验证显式客户端指针在默认模式保留与显式 legacy 模式原 full-create 行为，未删除其原断言。
+- 新响应作用域校验先于原 agent recovery，导致 native/ctx_pool/shared/dedicated/passthrough 的 guard_live/refusal 在安全的未发送下一帧提前终止。复用原 openAIWSUnsentAgentTurn，收敛 bridge 已有重复判断到同一 helper；只允许已知不同账号的作用域冲突进入重建。存储失败、未知记录、同账号模型/档位/线路变化及已发送当前轮仍终结；重建继续核对开关、完整拥有者/工具和最终字节。不增加第二套调度或宽松透传。
+- 最终 go test -race -p 1 -tags unit ./internal/service ./internal/handler -run '^Test(OpenAIWSUnsent|OpenAI409WSUnsent|OpenAIWSPlaintext|WSResponseOwner|WSNodeOwner|OpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPrevResponseCreationScope|Issue854Owner|OpenAI409WSReadable|OpenAI409WSReviewRepairs|OpenAI409WSInitial)' -count=1 -timeout=8m -json 退出 0：168 条父子通过事件/0 fail/skip，service18.391s、handler64.413s（upstream-225-owner-recovery-final.jsonl）。7 类新 helper 保护边界三轮24事件另通过，不叠加成独立场景。原生与透传当前帧在读取、RPM 等待和写前不同边界都已覆盖。
+- 一次恢复复查遗漏 Redis5 子进程 PATH，系统 Redis3 让初代归属写入直接 store_unavailable；失败保留，不据此改生产 Lua。显式恢复既有 H:/Root/tools/redis/5.0.14.1 后定位剩余透传边界再修复，最终168事件全部通过。此前原始失败、诊断不足、fmt 缺失与日志文件占用均保留为失败；最终日志为独立命令，不覆盖原失败日志。
+- Windows 的 chmod/符号链接与 shell 内核限制在 Linux 非 root/无网络/exec tmpfs 使用同源测试程序验证：mihomo174pass/6原skip、reauthruntime11pass/0skip、requestcapture112pass/1原skip、BPS691pass/0skip；全部退出0。初始 tmpfs 缺 exec 与 PowerShell 未引用点参数失败分别保留，未改变业务实现或添加 skip。两个已验的 sysutil/repository Linux 权限用例证据复用。
+- 生产只读确认仍 .9/de8b86ed8916、程序 SHA c8cec584a18135fe373f72b7e247588264206b1aa9360ea4d214f8aa48fa96ff；16账号/2组/1用户/1Key/432迁移，PG/Redis原ID保持。按原部署工具建立 /opt/sub2api/deploy/backups/ransub2api-2.25.0-ransub.1，数据库305199343bytes/SHA256 51321ca30321e6269603af601b413ac092d8492cc859d1d2a3767b1c34e825b4，配置、持久数据和旧程序均保留，production_changed=false；候选副本演练不等于生产切换。
+- 已核明未公开 .1 候选仍绑定旧5f1a4eb1c，精确移除其四个普通制品文件共245886975bytes后复用同一目录重建，不删任何已发布版本/回退资料/依赖缓存。原12PNG、历史拒删scratch保留。198受影响测试入口的PG14/Redis7扩大race运行中；其实际结果、最终制品和副本演练继续追加，不把已知源码通过外推为线上业务恢复。
+
+
+### 2026-11-26 D8/D9：最终候选与生产历史副本四阶段验收
+
+- 受影响198入口的七包 PG14/Redis7（真实Redis5进程PATH）扩大race完成：1217条pass事件、0skip，只有 TestIssue914LegacyWSCompatibility/apikey/passthrough/plaintext_instructions 在退出阶段一叶失败，另一个fail为父节点；六包通过、handler包失败（upstream-225-checked-assertions-race.jsonl）。原始日志保留，不宣称该命令整包绿。
+- 退出夹具 issue600Finish 原5秒总预算少于现有1.2秒usage排空加coder/websocket最多5秒关闭握手。只改测试等待总预算到8秒，连接退出、原始头和唯一完成用量断言均保留，不修改生产时间/重试/结算。整组 TestIssue914LegacyWSCompatibility 的67父子事件race通过，0fail/skip、handler50.167s（upstream-225-legacy-shutdown-final.jsonl）；按固定e16505d58不限量lint复验0 issues、handler vet退出0。不是通过改skip或删除原失败断言消除失败。
+- 混合拥有者专用 unit,ownerconflict 标签race另验13父子通过事件，0fail/skip、service2.354s，验证诊断不能冒充完整证明、重建仍重新核对原记录及新helper的七类保护（upstream-225-mixed-owner-final.jsonl）。与168事件有重叠，不重复计独立场景。
+- 最终 local-build --simple 实际退出0，前端类型检查及Vite1m3s通过，保留大分包警告。候选2.25.0-ransub.1的Linux amd64归档245887138bytes、SHA256 e0d3d8d2f563b3de4c56ec7cbe4a9308a07926aec033dc42660342441e762451；嵌入程序SHA256 f53d7482a948849b54ed5f41061e618a2001b93b31d9974954f76a5e59bc3b56，源码4c557ba961c32ddfa73829e0eeac49c77c502f09。发行工具verify实际退出0。后续4ec9155a9只改测试退出预算/文档，git diff排除*_test.go/文档后生产源码差异退出0；保留这份明确来源的同源候选，不伪造二进制Commit或重发旧归档。当前未公开Release/镜像，不将本地包称为线上latest。
+- 在hk2原部署布局/旧.9镜像下，隔离网络与tmpfs PostgreSQL/Redis恢复已校验的305199343bytes生产备份，执行旧版→候选→旧版回退→候选重升四阶段，实际全部通过（PRODUCTION_REHEARSAL_EXIT=0；upstream-225-production-rehearsal.log）。迁移432→495，旧迁移checksum逐项保持；回退旧程序在495 schema仍可登录、读取16账号/性能API，重升幂等。四阶段核对真实/proc/1/exe和内嵌Commit，旧程序c8cec584a18135fe、候选f53d7482a948849b。账号凭据/extra/启停/并发/倍率、用户余额/角色、组别倍率/绑定、优先调度及5/3/1设置快照保持。仅副本暂停倍率探测runner，无生产写入。
+- 11张既存保留表逐行转JSON后排序摘要比较全部一致：user_traffic_events144340行、user_traffic_hourly369行、balance_forecast_coverage1行，以及预测episode/outbox、旧token guard事件/状态/v2账号、oauth重登配置、工单/消息的既存空表均保留。候选迁移没有执行删除流量历史；这只是该真实备份的保留/串行升级与回退证据，不证明混版、真实供应商旧长会话或缓存净收益。
+- 副本六容器、一网络按归属标签及捕获ID全回收。后验 PRODUCTION_UNCHANGED_EXIT=0，正式APP/PG/Redis原容器ID、.9/de8b86ed8916/程序c8cec584a18135fe及432迁移保持；管理登录/16账号/性能API正常，隔离资源剩余0，备份SHA复核通过（upstream-225-production-after-rehearsal.log）。原28项20done/8部分不变。
+- 本轮四个已退出Linux测试程序精确删除66374279bytes；加上先前被取代的未公开制品245886975bytes，共312261254逻辑bytes，不冒称磁盘物理压缩。旧回滚/备份、可复用缓存、历史12PNG及曾拒删的repository/sysutil等scratch保持；不新建工作树、不抢其他任务进程、不删共享依赖。
+- PR4完成冲突/源码及副本子验收，待拥有者审核合并；不自行合并、不提前提升production或公开候选。公开发行、固定镜像、正式排空切换和公网终态/唯一用量仍是独立待验项；当前没有运行编译/测试CI。前次STATE写后字节断言失败已原位缩减并在写前检查，失败不影响已验证候选或生产，未重写已推历史。

@@ -83,7 +83,7 @@ func TestGatewayAvailabilityStopRecoveryAndRegionalAuthority(t *testing.T) {
 				account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
 					Credentials: map[string]any{"base_url": server.URL, "api_key": "fixture-key"}}
 				primary := &availabilityAdmissionRepo{}
-				limiter := ProvideRateLimitService(nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, primary)
+				limiter := ProvideRateLimitService(nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, primary)
 				require.Same(t, primary, limiter.availabilityReader)
 				var scheduler *SchedulerSnapshotService
 				replica := regionalTestReplica(t, filepath.Join(t.TempDir(), "state"), true)

@@ -20,7 +20,7 @@ shutil.copytree("/build/tosub2/node_modules", out / "tosub2/node_modules", symli
 shutil.copy2("/build/tosub2/LICENSE", out / "tosub2/LICENSE")
 shutil.copy2("/build/tosub2/package-lock.json", out / "tosub2/package-lock.json")
 shutil.copy2("/build/worker.py", out / "worker.py")
-for name in ("openai_totp_rotation.py", "openai_totp_journal.mjs", "openai_excel_oauth_adapter.py", "openai_excel_2fa_login.py", "openai_excel_password_flow.mjs", "openai_siwc_oauth_adapter.py", "openai_siwc_password_flow.mjs", "openai_codex_oauth_adapter.py", "openai_codex_diagnostics.mjs"):
+for name in ("openai_totp_rotation.py", "openai_totp_journal.mjs", "openai_excel_oauth_adapter.py", "openai_excel_2fa_login.py", "openai_excel_password_flow.mjs", "openai_siwc_oauth_adapter.py", "openai_siwc_password_flow.mjs", "openai_codex_oauth_adapter.py", "openai_codex_diagnostics.mjs", "openai_codex_login.mjs"):
     shutil.copy2(Path("/build/tools") / name, out / name)
 shutil.copy2("/etc/ssl/certs/ca-certificates.crt", out / "ca-certificates.crt")
 shutil.copytree("/usr/share/doc", out / "licenses/debian", symlinks=False)
@@ -59,6 +59,7 @@ for name, binary in (("python", "python-root/bin/python3"), ("node", "node.bin")
     )
     script.chmod(0o755)
 manifest = {"tosub2_commit": "8548397e89bf80e508eda64a87e0d556d43abc84",
+            "totp_factor_binding_patch": "issue881-v1",
             "architecture": platform.machine(), "python": platform.python_version(),
             "node": subprocess.check_output(["node", "--version"], text=True).strip(),
             "python_packages": subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True).splitlines()}

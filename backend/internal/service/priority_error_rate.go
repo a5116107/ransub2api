@@ -245,7 +245,22 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 }
 
 // Used by HTTP adapters whose physical sends bypass the native proxy pipeline.
-func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account, evidence ...*excelBPSWriteEvidence) (*http.Response, error) {
+func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy string, account *Account, evidence ...*excelBPSWriteEvidence) (result *http.Response, resultErr error) {
+	if route, ok := openAIRequestProxyFromContext(req.Context(), account.ID); ok {
+		if !account.OpenAIRequestProxyEnabled() {
+			return nil, denyOpenAITurn("account_binding_changed")
+		}
+		if _, err := ValidateOpenAIRequestProxyEgress(req.Context(), account.ID, proxy); err != nil {
+			return nil, err
+		}
+		var err error
+		req, err = route.bind(req)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { route.track(result) }()
+	}
+
 	var err error
 	req, err = s.preparePriorityLatencyHTTPSend(req, account)
 	if err != nil {

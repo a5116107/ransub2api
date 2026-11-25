@@ -35,7 +35,7 @@
               @click="selectUser(u)"
               class="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
             >
-              <span>{{ u.email }}<span v-if="u.deleted" class="ml-1 text-xs text-gray-400">（{{ t('admin.usage.userDeletedBadge') }}）</span></span>
+              <span>{{ u.email }}<span v-if="u.deleted" class="ml-1 text-xs text-gray-400">（{{ t(identityOnly ? 'traffic.deletedKey' : 'admin.usage.userDeletedBadge') }}）</span></span>
               <span class="ml-2 text-xs text-gray-400">#{{ u.id }}</span>
             </button>
           </div>
@@ -73,111 +73,128 @@
               class="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
             >
               <span class="truncate">{{ k.name || `#${k.id}` }}</span>
-              <span v-if="k.deleted" class="ml-1 text-xs text-gray-400">({{ t('traffic.deletedKey') }})</span>
+              <span v-if="k.deleted" class="ml-1 text-xs text-gray-400">({{ t(props.identityOnly ? 'traffic.deletedKey' : 'admin.usage.userDeletedBadge') }})</span>
               <span class="ml-2 text-xs text-gray-400">#{{ k.id }}</span>
             </button>
           </div>
-          <p v-if="apiKeySearchError" role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ t('traffic.keysFailed') }}</p>
         </div>
 
+          <p v-if="apiKeySearchError" role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ t('traffic.keysFailed') }}</p>
         <template v-if="!identityOnly">
-          <!-- Model Filter -->
-          <div class="w-full sm:w-auto sm:min-w-[220px]">
-            <label class="input-label">{{ t('usage.model') }}</label>
-            <Select v-model="filters.model" :options="modelOptions" searchable @change="emitChange" />
-          </div>
+        <div v-if="showPlatformFilter" data-testid="usage-platform-filter" class="w-full sm:w-52">
+          <label for="usage-platform" class="input-label flex items-center gap-1.5">
+            {{ t('admin.usage.platform') }}
+            <NewFeatureBadge v-if="noticeUserId != null" :notice-id="mode === 'errors' ? NEW_FEATURE_NOTICES.adminErrorPlatform : NEW_FEATURE_NOTICES.adminUsagePlatform" :user-id="noticeUserId" />
+          </label>
+          <Select
+            id="usage-platform"
+            :model-value="filters.platform ?? null"
+            :options="platformOptions"
+            :aria-label="t('admin.usage.platform')"
+            aria-describedby="usage-platform-hint"
+            searchable
+            @update:model-value="filters.platform = $event || undefined"
+            @change="emitChange"
+          />
+        </div>
 
-          <!-- Account Filter -->
-          <div ref="accountSearchRef" class="usage-filter-dropdown relative w-full sm:w-auto sm:min-w-[220px]">
-            <label class="input-label">{{ t('admin.usage.account') }}</label>
-            <input
-              v-model="accountKeyword"
-              type="text"
-              class="input pr-8"
-              :placeholder="t('admin.usage.searchAccountPlaceholder')"
-              @input="debounceAccountSearch"
-              @focus="showAccountDropdown = true"
-            />
+        <!-- Model Filter -->
+        <div class="w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('usage.model') }}</label>
+          <Select v-model="filters.model" :options="modelOptions" searchable @change="emitChange" />
+        </div>
+
+        <!-- Account Filter -->
+        <div ref="accountSearchRef" class="usage-filter-dropdown relative w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('admin.usage.account') }}</label>
+          <input
+            v-model="accountKeyword"
+            type="text"
+            class="input pr-8"
+            :placeholder="t('admin.usage.searchAccountPlaceholder')"
+            @input="debounceAccountSearch"
+            @focus="showAccountDropdown = true"
+          />
+          <button
+            v-if="filters.account_id"
+            type="button"
+            @click="clearAccount"
+            class="absolute right-2 top-9 text-gray-400"
+            aria-label="Clear account filter"
+          >
+            ✕
+          </button>
+          <div
+            v-if="showAccountDropdown && (accountResults.length > 0 || accountKeyword)"
+            class="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border bg-white shadow-lg dark:bg-dark-800"
+          >
             <button
-              v-if="filters.account_id"
+              v-for="a in accountResults"
+              :key="a.id"
               type="button"
-              @click="clearAccount"
-              class="absolute right-2 top-9 text-gray-400"
-              aria-label="Clear account filter"
+              @click="selectAccount(a)"
+              class="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
             >
-              ✕
+              <span class="truncate">{{ a.name }}</span>
+              <span class="ml-2 text-xs text-gray-400">#{{ a.id }}</span>
             </button>
-            <div
-              v-if="showAccountDropdown && (accountResults.length > 0 || accountKeyword)"
-              class="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border bg-white shadow-lg dark:bg-dark-800"
-            >
-              <button
-                v-for="a in accountResults"
-                :key="a.id"
-                type="button"
-                @click="selectAccount(a)"
-                class="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
-              >
-                <span class="truncate">{{ a.name }}</span>
-                <span class="ml-2 text-xs text-gray-400">#{{ a.id }}</span>
-              </button>
-            </div>
           </div>
+        </div>
 
-          <!-- Request Type Filter (usage only) -->
-          <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[180px]">
-            <label class="input-label">{{ t('usage.type') }}</label>
-            <Select v-model="filters.request_type" :options="requestTypeOptions" @change="emitChange" />
-          </div>
+        <!-- Request Type Filter (usage only) -->
+        <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('usage.type') }}</label>
+          <Select v-model="filters.request_type" :options="requestTypeOptions" @change="emitChange" />
+        </div>
 
-          <!-- Native compaction is independent of the transport request type. -->
-          <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[180px]">
-            <label class="input-label">{{ t('usage.compactionFilter') }}</label>
-            <Select v-model="filters.native_compaction_v2" :options="compactionOptions" @change="emitChange" />
-          </div>
+        <!-- Native compaction is independent of the transport request type. -->
+        <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('usage.compactionFilter') }}</label>
+          <Select v-model="filters.native_compaction_v2" :options="compactionOptions" @change="emitChange" />
+        </div>
 
-          <!-- Billing Type Filter (usage only) -->
-          <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[200px]">
-            <label class="input-label">{{ t('admin.usage.billingType') }}</label>
-            <Select v-model="filters.billing_type" :options="billingTypeOptions" @change="emitChange" />
-          </div>
+        <!-- Billing Type Filter (usage only) -->
+        <div v-if="mode !== 'errors' && mode !== 'connections' && mode !== 'latency'" class="w-full sm:w-auto sm:min-w-[200px]">
+          <label class="input-label">{{ t('admin.usage.billingType') }}</label>
+          <Select v-model="filters.billing_type" :options="billingTypeOptions" @change="emitChange" />
+        </div>
 
-          <!-- Billing Mode Filter (usage only；用户排行的 user-breakdown 接口不支持该维度) -->
-          <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[200px]">
-            <label class="input-label">{{ t('admin.usage.billingMode') }}</label>
-            <Select v-model="filters.billing_mode" :options="billingModeOptions" @change="emitChange" />
-          </div>
+        <!-- Billing Mode Filter (usage only；用户排行的 user-breakdown 接口不支持该维度) -->
+        <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[200px]">
+          <label class="input-label">{{ t('admin.usage.billingMode') }}</label>
+          <Select v-model="filters.billing_mode" :options="billingModeOptions" @change="emitChange" />
+        </div>
 
-          <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[220px]">
-            <label class="input-label">{{ t('admin.usage.upstreamModelAudit') }}</label>
-            <Select v-model="filters.upstream_model_mismatch" :options="upstreamModelMismatchOptions" @change="emitChange" />
-          </div>
+        <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('admin.usage.upstreamModelAudit') }}</label>
+          <Select v-model="filters.upstream_model_mismatch" :options="upstreamModelMismatchOptions" @change="emitChange" />
+        </div>
 
-          <!-- Error Phase Filter (errors only) -->
-          <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
-            <label class="input-label">{{ t('admin.ops.errorLog.type') }}</label>
-            <Select v-model="filters.error_phase" :options="errorPhaseOptions" @change="emitChange" />
-          </div>
+        <!-- Error Phase Filter (errors only) -->
+        <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('admin.ops.errorLog.type') }}</label>
+          <Select v-model="filters.error_phase" :options="errorPhaseOptions" @change="emitChange" />
+        </div>
 
-          <!-- Error Category Filter (errors only) -->
-          <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
-            <label class="input-label">{{ t('usage.errors.category') }}</label>
-            <Select v-model="filters.error_category" :options="errorCategoryOptions" @change="emitChange" />
-          </div>
+        <!-- Error Category Filter (errors only) -->
+        <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('usage.errors.category') }}</label>
+          <Select v-model="filters.error_category" :options="errorCategoryOptions" @change="emitChange" />
+        </div>
 
-          <!-- Status Code Filter (errors only) -->
-          <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
-            <label class="input-label">{{ t('admin.ops.errorLog.status') }}</label>
-            <Select v-model="filters.status_code" :options="statusCodeOptions" @change="emitChange" />
-          </div>
+        <!-- Status Code Filter (errors only) -->
+        <div v-if="mode === 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('admin.ops.errorLog.status') }}</label>
+          <Select v-model="filters.status_code" :options="statusCodeOptions" @change="emitChange" />
+        </div>
 
-          <!-- Group Filter -->
-          <div class="w-full sm:w-auto sm:min-w-[200px]">
-            <label class="input-label">{{ t('admin.usage.group') }}</label>
-            <Select v-model="filters.group_id" :options="groupOptions" searchable @change="emitChange" />
-          </div>
+        <!-- Group Filter -->
+        <div class="w-full sm:w-auto sm:min-w-[200px]">
+          <label class="input-label">{{ t('admin.usage.group') }}</label>
+          <Select v-model="filters.group_id" :options="groupOptions" searchable @change="emitChange" />
+        </div>
+
         </template>
-
       </div>
 
       <!-- Right: actions -->
@@ -190,7 +207,7 @@
         </button>
         <slot name="after-reset" />
         <template v-if="mode === 'usage'">
-          <button v-if="!observerMode" type="button" @click="$emit('cleanup')" class="btn btn-danger">
+          <button v-if="!observerMode" type="button" @click="$emit('cleanup')" :disabled="!!filters.platform" :title="filters.platform ? t('admin.usage.platformCleanupUnavailable') : undefined" class="btn btn-danger">
             {{ t('admin.usage.cleanup.button') }}
           </button>
           <button type="button" @click="$emit('export')" :disabled="exporting" class="btn btn-primary">
@@ -199,6 +216,7 @@
         </template>
       </div>
     </div>
+    <p v-if="showPlatformFilter" id="usage-platform-hint" class="mt-3 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.usage.platformHistoryHint') }}</p>
   </div>
 </template>
 
@@ -210,12 +228,16 @@ import { observerUsageContext } from './observerUsageContext'
 import { adminAPI } from '@/api/admin'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import { COMMON_ERROR_STATUS_CODES } from '@/utils/errorBadges'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 import type { SimpleUser } from '@/api/admin/usage'
 
 type ModelValue = Record<string, any>
 
 interface Props {
   modelValue: ModelValue
+  noticeUserId?: number
   exporting: boolean
   startDate: string
   endDate: string
@@ -228,10 +250,9 @@ interface Props {
    */
   mode?: 'usage' | 'errors' | 'ranking' | 'connections' | 'latency'
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
-  flat?: boolean
-  /** Reuse user/key search without token, account, model or group filters. */
   identityOnly?: boolean
   apiKeySearch?: (userId: number | undefined, query: string) => Promise<UsageFilterOption[]>
+  flat?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -282,6 +303,12 @@ let accountSearchTimeout: ReturnType<typeof setTimeout> | null = null
 const modelOptions = computed<SelectOption[]>(() => [
   { value: null, label: t('admin.usage.allModels') },
   ...(props.modelOptions ?? []).map((m) => ({ value: m, label: m })),
+])
+const showPlatformFilter = computed(() => !props.identityOnly && !observerMode && (props.mode === 'usage' || props.mode === 'errors'))
+const platformOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t('admin.usage.allPlatforms') },
+  ...CONCRETE_PLATFORM_OPTIONS,
+  { value: 'unknown', label: t('admin.usage.unknownPlatform') },
 ])
 const groupOptions = ref<SelectOption[]>([{ value: null, label: t('admin.usage.allGroups') }])
 
@@ -393,9 +420,15 @@ const searchApiKeys = async (userId: number | undefined, query: string, sequence
       : observerMode
       ? await observerUsageAPI.filterOptions('api_key', query)
       : await adminAPI.usage.searchApiKeys(userId, query)
-    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) { apiKeyResults.value = results; apiKeySearchError.value = false }
+    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) {
+      apiKeyResults.value = results
+      apiKeySearchError.value = false
+    }
   } catch {
-    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) { apiKeyResults.value = []; apiKeySearchError.value = Boolean(props.apiKeySearch) }
+    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) {
+      apiKeyResults.value = []
+      apiKeySearchError.value = Boolean(props.apiKeySearch)
+    }
   }
 }
 
@@ -436,7 +469,7 @@ const clearUser = () => {
 
 const selectApiKey = (k: UsageFilterOption) => {
   clearPendingApiKeySearch()
-  apiKeyKeyword.value = `${k.name || String(k.id)}${k.deleted ? ` (${t('traffic.deletedKey')})` : ''}`
+  apiKeyKeyword.value = `${k.name || String(k.id)}${k.deleted ? ` (${t(props.identityOnly ? 'traffic.deletedKey' : 'admin.usage.userDeletedBadge')})` : ''}`
   showApiKeyDropdown.value = false
   filters.value.api_key_id = k.id
   emitChange()

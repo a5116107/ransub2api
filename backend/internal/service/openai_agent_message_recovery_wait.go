@@ -3,13 +3,26 @@ package service
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"time"
 )
+
+// Produced only by the scheduler after checking the proven owner's current
+// route/policy and completed delivery fences. No upstream response or generic
+// authentication/billing error can authorize this pre-dispatch rebuild.
+type openAIInitialOwnerUnavailableError struct{ cause error }
+
+func (e *openAIInitialOwnerUnavailableError) Error() string { return e.cause.Error() }
+func (e *openAIInitialOwnerUnavailableError) Unwrap() error { return e.cause }
+func OpenAIWSInitialOwnerCanRebuild(err error) bool {
+	var unavailable *openAIInitialOwnerUnavailableError
+	return errors.As(err, &unavailable)
+}
 
 // A cooldown is not evidence of incompatible ciphertext. Preserve the existing
 // evidence while waiting, without admitting a request or guessing another owner.
 func (s *defaultOpenAIAccountScheduler) checkOpenAIAgentRecoveryCooldown(ctx context.Context, req OpenAIAccountScheduleRequest, recovery *openAIAgentRecoveryRequest) error {
-	if recovery == nil || recovery.owner == nil || s.service.accountRepo == nil {
+	if !recovery.ownerBindingRequired() || s.service.accountRepo == nil {
 		return nil
 	}
 	// The scheduler snapshot may filter out quota-blocked accounts entirely.
@@ -33,12 +46,19 @@ func (s *defaultOpenAIAccountScheduler) checkOpenAIAgentRecoveryCooldown(ctx con
 	if account.OverloadUntil != nil && account.OverloadUntil.After(now) && account.OverloadUntil.After(retryAt) {
 		retryAt, reason = *account.OverloadUntil, "owner_overloaded"
 	}
-	if retryAt.IsZero() {
+	// A transient upstream failure can park just this account and mapped model
+	// without setting either of the persisted account-level deadlines.
+	model := canonicalOpenAIAccountSchedulingModel(account, req.RequestedModel)
+	if until := s.service.getOpenAIAccountModelTransientState().blockedUntil(account.ID, model, now); until.After(retryAt) {
+		retryAt, reason = until, "owner_overloaded"
+	}
+	pausedWSOwner := !account.Schedulable && req.RequiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress
+	if retryAt.IsZero() && !pausedWSOwner {
 		return nil
 	}
 	// Revocation, manual pauses and credential/route changes still require
 	// intervention; a future quota reset must not disguise those conditions.
-	if !account.IsActive() || !account.Schedulable || account.PerformancePaused ||
+	if !account.IsActive() || (!account.Schedulable && !pausedWSOwner) || account.PerformancePaused ||
 		(account.AutoPauseOnExpired && account.ExpiresAt != nil && !account.ExpiresAt.After(now)) ||
 		(account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(now)) ||
 		(account.SupportsAccountQuota() && account.IsQuotaExceeded()) ||
@@ -67,6 +87,12 @@ func (s *defaultOpenAIAccountScheduler) checkOpenAIAgentRecoveryCooldown(ctx con
 	}
 	if _, excluded := req.ExcludedIDs[account.ID]; excluded {
 		return openAIAgentRecoveryError("owner_unavailable")
+	}
+	if pausedWSOwner {
+		if err := s.service.retainOpenAIAgentRecovery(ctx, recovery, s.service.openAIWSSessionStickyTTL()); err != nil {
+			return err
+		}
+		return &openAIInitialOwnerUnavailableError{cause: openAIAgentRecoveryError("owner_unavailable")}
 	}
 	// Leave a full normal affinity window after reset, even if the client waits
 	// without polling. These are local observations, not provider-side leases.
@@ -102,7 +128,11 @@ func (s *defaultOpenAIAccountScheduler) checkOpenAIAgentRecoveryCooldown(ctx con
 	if err := s.service.retainOpenAIAgentRecovery(storeCtx, recovery, ttl); err != nil {
 		return err
 	}
-	return &OpenAIAgentRecoveryError{Reason: reason, RetryAt: retryAt}
+	refusal := &OpenAIAgentRecoveryError{Reason: reason, RetryAt: retryAt}
+	if req.RequiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress {
+		return &openAIInitialOwnerUnavailableError{cause: refusal}
+	}
+	return refusal
 }
 
 func (s *OpenAIGatewayService) retainOpenAIAgentRecovery(ctx context.Context, request *openAIAgentRecoveryRequest, ttl time.Duration) error {

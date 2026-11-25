@@ -24,6 +24,10 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	managed := account.HasManagedOpenAIConnections()
 	if account != nil && account.Platform == PlatformOpenAI && s.excelOAuthReauth != nil {
 		if repo, ok := s.excelOAuthReauth.repo.(OpenAIAuthConnectionRepository); ok {
@@ -104,7 +108,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
 	applyOpenAIAPIKeyIdentityHeaders(upstreamReq.Header, account, s.codexIdentityOverrideUA(account))
-	account.ApplyHeaderOverrides(upstreamReq.Header)
+	account.ApplyHeaderOverridesWithContext(upstreamReq.Context(), upstreamReq.Header)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

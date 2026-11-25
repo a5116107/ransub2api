@@ -38,6 +38,7 @@ linters:
           files:
             - "**/internal/handler/**"
             - "!**/internal/handler/*_test.go"
+            - "!**/internal/handler/**/*_test.go"
           deny:
             - pkg: github.com/Wei-Shaw/sub2api/internal/repository
               desc: "handler must not import repository"

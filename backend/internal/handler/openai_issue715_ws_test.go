@@ -162,6 +162,7 @@ func issue715WSSend(t *testing.T, conn *coderws.Conn, body string) {
 
 type issue715WSDeliveryCache interface {
 	issue715DeliveryOwners
+	service.OpenAIResponseOwnerCache
 	ReserveOpenAIAgentRecovery(context.Context, string, string, string, time.Duration) error
 	FinishOpenAIAgentRecovery(context.Context, string, string, string, bool, time.Duration) error
 }

@@ -63,6 +63,8 @@ type pr610TimingScenario struct {
 	longFirst     bool
 	attempts      atomic.Int32
 	mu            sync.Mutex
+	frameSentAt   map[int32]time.Time
+	providerWait  map[int32]time.Duration
 	gated         map[string]bool
 	barriers      chan pr610Barrier
 	realTurns     []pr610RealTurn
@@ -72,7 +74,7 @@ type pr610TimingScenario struct {
 
 func newPR610Scenario(t *testing.T, mode string) *pr610TimingScenario {
 	t.Helper()
-	s := &pr610TimingScenario{t: t, mode: mode, base: time.Now(), barriers: make(chan pr610Barrier), deltaRead: make(chan struct{}), gated: map[string]bool{}}
+	s := &pr610TimingScenario{t: t, mode: mode, base: time.Now(), barriers: make(chan pr610Barrier), deltaRead: make(chan struct{}), gated: map[string]bool{}, frameSentAt: map[int32]time.Time{}, providerWait: map[int32]time.Duration{}}
 	raw := testutil.NewRedisConcurrencyCache(t)
 	q, ok := raw.(service.APIKeySlotQueueCache)
 	require.True(t, ok)
@@ -161,6 +163,7 @@ func (s *pr610TimingScenario) prepareTurn() {
 	if s.realtime {
 		s.realTurns = append(s.realTurns, pr610RealTurn{started: time.Now()})
 	}
+	s.frameSentAt[turn] = time.Now()
 	s.mu.Unlock()
 	phases := []string{"user", "account"}
 	if s.failover && turn == 2 {
@@ -197,6 +200,13 @@ func (s *pr610TimingScenario) prepareTurn() {
 				}
 				if phase == "switch_account" {
 					d = 5 * time.Second
+				}
+				if s.realtime && s.retry {
+					// This real retry fixture needs separation from the 380ms
+					// queue ceiling even when the runner overschedules a sleep.
+					// Keep both actual acquisitions, at 10ms each; the rejected
+					// network attempt below alone lasts longer than the ceiling.
+					d = time.Second
 				}
 				s.advance(d)
 				close(b.release)
@@ -235,8 +245,18 @@ func (s *pr610TimingScenario) afterDelta() {
 		s.advance(80 * time.Second)
 	}
 }
+
+// Capture the real client-send-to-provider boundary independently of the
+// production timing arithmetic. Hosted-runner scheduling can extend waits.
+func (s *pr610TimingScenario) observeProvider() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turn := s.turn.Load()
+	s.providerWait[turn] = time.Since(s.frameSentAt[turn])
+}
 func (s *pr610TimingScenario) writeWS(c *coderws.Conn, turn int, payload []byte) {
 	s.observeUpstream()
+	s.observeProvider()
 	s.advance(2 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -260,6 +280,7 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	if s.mode != service.OpenAIWSIngressModeHTTPBridge {
 		return false
 	}
+	s.observeProvider()
 	payload, err := io.ReadAll(r.Body)
 	require.NoError(s.t, err)
 	s.observeUpstream()
@@ -274,7 +295,11 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 	if s.retry && s.attempts.Add(1) == 1 {
-		s.advance(7 * time.Second)
+		delay := 7 * time.Second
+		if s.realtime {
+			delay = 40 * time.Second // advance scales to 400ms of real network wait
+		}
+		s.advance(delay)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`)

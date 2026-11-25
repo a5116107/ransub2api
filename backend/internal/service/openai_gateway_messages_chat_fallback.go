@@ -74,7 +74,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		return nil, err
 	}
 	chatReq.Model = upstreamModel
-	if openai.IsGPT61SolModelSpelling(upstreamModel) {
+	if openai.IsGPT61SolModelSpelling(upstreamModel) || openai.GPT62ModelID(upstreamModel) != "" {
 		chatReq.Temperature = nil
 		chatReq.TopP = nil
 	}
@@ -177,7 +177,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if err != nil {
 		return nil, err
 	}
-	anthropicResp := apicompat.ChatCompletionsResponseToAnthropic(ccResp, originalModel)
+	anthropicResp := apicompat.ChatCompletionsResponseToAnthropic(ccResp, compositeClientModel(c.Request.Context(), originalModel))
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -215,7 +215,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
-	anthropicState := apicompat.NewChatCompletionsToAnthropicStreamState(originalModel)
+	anthropicState := apicompat.NewChatCompletionsToAnthropicStreamState(compositeClientModel(c.Request.Context(), originalModel))
 	clientDisconnected := false
 
 	// 与 responses 兄弟不同：客户端断开后仍继续做事件转换（喂 anthropicState），
@@ -246,6 +246,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	usage := scan.Usage
 
 	if scan.Err != nil {
+		if len(scan.SemanticFailure) > 0 {
+			scan.Err = writeNativeAnthropicSemanticFailure(c, scan.SemanticFailure, originalModel)
+		}
 		// Broken upstream read: skip finalization so no synthetic message_stop
 		// masks the truncation, and surface the error to flag usage incomplete
 		// (mirrors forwardResponsesViaRawChatCompletions).

@@ -75,6 +75,10 @@ func buildSeedanceURL(base string, endpoint GrokMediaEndpoint, taskID string) (s
 // future fields. Only model is rewritten using the account's configured mapping.
 func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	billingBody := body
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	if !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance) || !endpoint.IsSeedance() {
 		return nil, fmt.Errorf("seedance requires an OpenAI API key account with a custom base URL")
 	}
@@ -116,7 +120,7 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverridesWithContext(req.Context(), req.Header)
 	if endpoint.IsVideoLookupRequest() {
 		req, err = s.prepareAsyncVideoKeyLookup(req, account, endpoint, taskID)
 		if err != nil {

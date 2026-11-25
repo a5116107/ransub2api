@@ -78,7 +78,7 @@ func TestAvailabilityManagedScheduledWorkerRotatesRealGrants(t *testing.T) {
 	scheduled := service.NewScheduledTestService(plans, results)
 	queue := qualityqueue.NewRedis(repository.Issue594TestRedis())
 	t.Cleanup(func() { require.NoError(t, queue.Close()) })
-	runner := service.ProvideScheduledTestRunnerService(plans, scheduled, tester, nil, cfg, &service.QualityJudgeService{}, repository.Issue594TestRedis(), nil, &service.ChannelMonitorV2Service{})
+	runner := service.ProvideScheduledTestRunnerService(plans, scheduled, tester, nil, cfg, &service.QualityJudgeService{}, repository.Issue594TestRedis(), nil, &service.ChannelMonitorV2Service{}, nil)
 	t.Cleanup(runner.Stop)
 	for round := 1; round <= 2; round++ {
 		require.NoError(t, queue.Enqueue(ctx, f.accountID, time.Now()))
@@ -260,7 +260,7 @@ func TestAvailabilityManagedBPSIncompleteKeepsHealthyGrantWithPostgres(t *testin
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
 	plans := repository.NewScheduledTestPlanRepository(f.db)
-	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
 	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gateway.CloseOpenAIWSPool)
@@ -380,7 +380,7 @@ func TestAvailabilityManagedProbeToGatewayWithPostgres(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
 	plans := repository.NewScheduledTestPlanRepository(f.db)
-	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	limiter := service.ProvideRateLimitService(f.accounts, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	gateway := service.NewOpenAIGatewayService(f.accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), limiter, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, service.WithOpenAIAuthConnections(f.svc), service.WithOpenAIAvailabilityReader(plans))
 	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	t.Cleanup(gateway.CloseOpenAIWSPool)

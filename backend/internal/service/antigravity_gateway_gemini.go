@@ -45,6 +45,13 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	defer func() {
 		recordForwardTimingOutcome(ctx, c, forwardResult != nil && forwardResult.ClientDisconnect, forwardErr)
 	}()
+	if account.gatewayProtocolsPending() {
+		return s.forwardGatewayGemini(ctx, c, account, originalModel, action, stream, body)
+	}
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	forwardOpts := forwardGeminiOptions{}
@@ -368,7 +375,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if unwrapErr != nil || len(unwrappedForOps) == 0 {
 			unwrappedForOps = respBody
 		}
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
+		s.handleUpstreamErrorAfterRetryLoop(ctx, c, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
 		upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(unwrappedForOps))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		upstreamDetail := s.getUpstreamErrorDetail(unwrappedForOps)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"time"
 )
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
@@ -169,6 +170,27 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 	if err != nil {
 		return nil, err
 	}
+	route, scoped := openAIRequestProxyFromContext(request.Context(), account.ID)
+	// A fresh admission snapshot may disable request routing after acquisition.
+	// Reject before send rather than bypassing the scope's cancellation/body fence.
+	if route != nil && !account.OpenAIRequestProxyEnabled() {
+		return nil, denyOpenAITurn("account_binding_changed")
+	}
+	if account.OpenAIRequestProxyEnabled() {
+		if !scoped {
+			return nil, errOpenAIRequestProxyUnavailable
+		}
+		var bindErr error
+		request, bindErr = route.bind(request)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		proxyURL = route.proxy
+		defer func() { route.track(result) }()
+		if s.codexTicketPinsEgress(request, account) || account.AuthConnectionID != "" {
+			return nil, errOpenAIRequestProxyUnavailable
+		}
+	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {
 			return nil, err
@@ -188,6 +210,9 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 	defer func() {
 		if result != nil && result.Request == nil {
 			result.Request = request
+		}
+		if result != nil && result.Request != nil {
+			result.Request = result.Request.WithContext(context.WithValue(result.Request.Context(), openAI429WeeklyObservedAtKey{}, time.Now()))
 		}
 		result, resultErr = phaseGuard.finish(result, resultErr)
 		resultErr = finishHeaderTimeout(result, resultErr)
@@ -308,7 +333,7 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 	account *Account,
 	useTLSFallback bool,
 	body []byte,
-) (*http.Response, error) {
+) (result *http.Response, resultErr error) {
 	request = bindOpenAIAgentPublicKey(request, s.accountRepo, account)
 	gateway := s.openaiGatewayService
 	if gateway != nil && gateway.excelOAuthReauth != nil {
@@ -324,6 +349,36 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 			return nil, err
 		}
 	}
+	if account.OpenAIRequestProxyEnabled() {
+		if account.AuthConnectionID != "" {
+			return nil, errOpenAIRequestProxyUnavailable
+		}
+		// Scope acquisition is independent of optional plugin/ticket services.
+		scopeService := gateway
+		if scopeService == nil {
+			scopeService = &OpenAIGatewayService{}
+		}
+		ctx, release, err := scopeService.beginOpenAIRequestProxy(request.Context(), nil, account)
+		if err != nil {
+			return nil, err
+		}
+		request = request.WithContext(ctx)
+		route, _ := openAIRequestProxyFromContext(ctx, account.ID)
+		request, err = route.bind(request)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		proxyURL = route.proxy
+		defer func() {
+			if resultErr != nil || result == nil || result.Body == nil {
+				release()
+				return
+			}
+			route.track(result)
+			result.Body = &openAIRequestProxyOwnedBody{ReadCloser: result.Body, finish: release}
+		}()
+	}
 	model := extractOpenAICodexTicketModel(body)
 	if gateway != nil && !IsAstraSourceAcquisition(request.Context()) && request.URL != nil && request.URL.String() == chatgptCodexAPIURL &&
 		isOpenAICodexTicketAccount(account, model) && gateway.openAICodexTicketEnabledContext(request.Context()) &&
@@ -331,12 +386,21 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 		if err := gateway.applyOpenAICodexTicket(request.Context(), account, model, request.Header, "sse"); err != nil {
 			return nil, err
 		}
+		if expected, independent := request.Context().Value(oauth429ExecutionKey{}).(*oauth429Execution); independent {
+			ticket := gateway.boundCodexTicket(request, account)
+			if ticket == nil || ticket.AccountID != expected.AccountID || (ticket.SourceAccountID != 0 && ticket.SourceAccountID != expected.AccountID) {
+				return nil, fmt.Errorf("independent test cannot use another account's ticket")
+			}
+		}
 		// This restores the complete cookie/egress bundle, holds it until body close,
 		// observes replacements and enforces the configured strict response policy.
 		request = request.WithContext(context.WithValue(request.Context(), astraCandySkipObservationKey{}, true))
-		return gateway.doOpenAIUpstream(request, proxyURL, account)
+		resp, err := gateway.doOpenAIUpstream(request, proxyURL, account)
+		recordOAuth429TestStatus(request, account.ID, resp, err)
+		return resp, err
 	}
-	if s.pluginManager != nil && account.AuthConnectionID == "" {
+	_, independent429 := request.Context().Value(oauth429ExecutionKey{}).(*oauth429Execution)
+	if s.pluginManager != nil && !account.OpenAIRequestProxyEnabled() && !independent429 && account.AuthConnectionID == "" {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(pluginUpstreamKeyPolicyContext(request.Context(), s.cfg), request, proxyURL, account)
 		if handled {
 			if options, ok := pelicanTestOptionsFromContext(request.Context()); ok && options.nativeOAuthTransport != nil && !IsAstraSourceAcquisition(request.Context()) {

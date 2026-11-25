@@ -930,7 +930,7 @@ func (s *OpenAIGatewayService) codexTicketChatHeld(accountID int64) bool {
 	return ctr != nil && atomic.LoadInt64(ctr) > 0
 }
 
-func (s *OpenAIGatewayService) manualHarvestLiveModels(account *Account, models []string) map[string]struct{} {
+func (s *OpenAIGatewayService) liveCodexTicketModels(account *Account, models []string) map[string]struct{} {
 	got := map[string]struct{}{}
 	if s == nil || account == nil {
 		return got
@@ -950,7 +950,7 @@ func (s *OpenAIGatewayService) markManualHarvestLiveModels(account *Account, mod
 	if got == nil {
 		return
 	}
-	for model := range s.manualHarvestLiveModels(account, models) {
+	for model := range s.liveCodexTicketModels(account, models) {
 		got[model] = struct{}{}
 	}
 }
@@ -959,7 +959,7 @@ func (s *OpenAIGatewayService) accountHasLiveCodexTicket(account *Account) bool 
 	if s == nil || account == nil {
 		return false
 	}
-	return len(s.manualHarvestLiveModels(account, s.openAICodexTicketConfig().Models)) > 0
+	return len(s.liveCodexTicketModels(account, s.openAICodexTicketConfig().Models)) > 0
 }
 
 // Harvest-excluded is harvest-scope only: accounts outside selected groups

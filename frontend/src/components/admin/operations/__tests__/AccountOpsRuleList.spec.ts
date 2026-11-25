@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils'
 import RuleList from '../AccountOpsRuleList.vue'
 import type { AccountOpsConfig, AccountOpsGroup, AccountOpsThresholdAccount } from '@/api/admin/accountOps'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => values ? `${key}:${JSON.stringify(values)}` : key }) }))
+vi.mock('vue-i18n', async importOriginal => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => values ? `${key}:${JSON.stringify(values)}` : key }) }))
 
 const config: AccountOpsConfig = {
   enabled: false, recipient: '', balance_low: true, weekly_quota: true, cooldown_minutes: 60,
@@ -77,5 +77,28 @@ describe('saved threshold currency', () => {
     expect(wrapper.text()).toContain('≤ 5.00 USD')
     expect(wrapper.text()).toContain('accountOps.ruleStates.unknown')
     wrapper.unmount()
+  })
+})
+
+describe('channel view', () => {
+  it('defaults to wallet rows, searches all pages and scopes batch edits to the visible page', async () => {
+    const wallets = Array.from({ length: 12 }, (_, i) => ({ ...accounts[0], account_id: i + 10, account_name: 'key-' + i, provider_id: i + 1 }))
+    const walletGroups = wallets.map((a, i) => ({ ...groups[0], id: 'wallet-' + i, name: 'Wallet ' + i, provider_id: i + 1, account_ids: [a.account_id] }))
+    const w = mount(RuleList, {props:{ accounts:[...wallets, accounts[1], accounts[2]], groups:walletGroups, config, channelView:true, loading:false, ready:true, error:'' }})
+    expect(w.findAll('[data-testid^="rule-row-"]')).toHaveLength(10)
+    expect(w.get('[data-testid="balance-notification-10"]').element.closest('details')?.open).toBe(false)
+    await w.get('[data-testid="select-visible-groups"]').setValue(true)
+    await w.get('[data-testid="batch-edit-rules"]').trigger('click')
+    expect(w.emitted('batch-edit')?.[0]).toEqual([wallets.slice(0,10)])
+    await w.get('input[aria-label="accountOps.search"]').setValue('key-11')
+    expect(w.findAll('[data-testid^="rule-row-"]')).toHaveLength(1)
+    expect(w.get('[data-testid="rule-row-wallet-11"]').exists()).toBe(true)
+    await w.get('[data-testid="channel-view-official"]').trigger('click')
+    expect(w.findAll('[data-testid^="rule-row-"]')).toHaveLength(1)
+    expect(w.get('[data-testid="rule-row-account:2"]').text()).toContain('Beta oauth')
+    await w.get('[data-testid="channel-view-other"]').trigger('click')
+    expect(w.findAll('[data-testid^="rule-row-"]')).toHaveLength(1)
+    expect(w.get('[data-testid="rule-row-account:3"]').text()).toContain('Gamma key')
+    w.unmount()
   })
 })

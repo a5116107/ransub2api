@@ -338,18 +338,32 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	}
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
-	scanner := s.newUpstreamSSEScanner(resp.Body)
 	timing := sseTimingObserver{ctx: responseTimingContext(c, resp), protocol: "chat_completions"}
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	flushPending := false
+	flushToClient := func() {
+		if flushPending && !clientDisconnected && clientOutputStarted {
+			c.Writer.Flush()
+		}
+		flushPending = false
+	}
+	scanner := newDeepSeekChatSSEPrefixScanner(
+		s.newUpstreamSSEScanner(&flushBeforeUpstreamRead{r: resp.Body, flush: flushToClient}), account, upstreamModel,
+	)
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
 	var regionalUsagePayload []byte
 	var normalizationErr error
+	semanticFailure := false
+	var pendingErrorLines []string
+	var pendingErrorData []string
+	pendingErrorBytes := 0
+	stagingError := false
 
 	writeLine := func(line string) {
 		if clientDisconnected {
@@ -386,6 +400,57 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	for scanner.Scan() {
 		line := scanner.Text()
 		timing.observeTimingLine(line)
+		// Error frames must be complete before becoming authoritative. In
+		// particular, gjson can find an object in truncated, invalid JSON.
+		if eventType, ok := extractOpenAISSEEventLine(line); ok && eventType == "error" {
+			stagingError = true
+		}
+		if payload, ok := extractOpenAISSEDataLine(line); ok && gjson.Get(payload, "error").IsObject() {
+			stagingError = true
+		}
+		if stagingError {
+			pendingErrorLines = append(pendingErrorLines, line)
+			pendingErrorBytes += len(line)
+			if payload, ok := extractOpenAISSEDataLine(line); ok {
+				pendingErrorData = append(pendingErrorData, payload)
+			}
+			if pendingErrorBytes > openAIFirstOutputStageMaxBytes {
+				normalizationErr = errors.New("upstream error event exceeds size limit")
+				break
+			}
+			if line != "" {
+				continue
+			}
+			payload := strings.Join(pendingErrorData, "\n")
+			if gjson.Valid(payload) && (gjson.Get(payload, "error").IsObject() || gjson.Get(payload, "type").String() == "error") {
+				writeStreamHeaders()
+				for _, pending := range pendingLines {
+					if _, writeErr := c.Writer.WriteString(pending + "\n"); writeErr != nil {
+						clientDisconnected = true
+						break
+					}
+				}
+				pendingLines = nil
+				for _, pending := range pendingErrorLines {
+					if _, writeErr := c.Writer.WriteString(pending + "\n"); writeErr != nil {
+						clientDisconnected = true
+						break
+					}
+				}
+				c.Writer.Flush()
+				clientOutputStarted = true
+				semanticFailure = true
+				break
+			}
+			// Invalid error-shaped events are not terminal evidence. Discard
+			// them; a subsequent read reset must still reach classification.
+			pendingErrorLines = nil
+			pendingErrorData = nil
+			pendingErrorBytes = 0
+			stagingError = false
+			continue
+		}
+
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			if u := extractCCStreamUsage(payload); u != nil {
 				regionalUsagePayload = []byte(payload)
@@ -418,16 +483,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 		line = s.replaceModelInSSELine(line, upstreamModel, originalModel)
 		writeLine(line)
-		if line == "" {
-			if !clientDisconnected && clientOutputStarted {
-				c.Writer.Flush()
-			}
-			continue
-		}
-		if !clientDisconnected && clientOutputStarted {
-			c.Writer.Flush()
-		}
+		// 不逐行 flush：scanner 下次向上游读取前统一 flush（见 flushBeforeUpstreamRead）。
+		flushPending = true
 	}
+	flushToClient()
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
@@ -473,6 +532,16 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	clientAborted := clientDisconnected ||
 		errors.Is(scanErr, context.Canceled) ||
 		errors.Is(scanErr, context.DeadlineExceeded)
+
+	if semanticFailure && clientOutputStarted {
+		MarkResponseCommitted(c)
+		return resultWithUsage(), errors.New("upstream response failed")
+	}
+	if !clientAborted && !terminal.Terminated() {
+		if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, requestID, scanErr); handled {
+			return resultWithUsage(), resetErr
+		}
+	}
 
 	// 上游在任何终止信号之前结束：连接被 reset（scanErr != nil）或干净 EOF。
 	// 两者都不能再记成功——此前统一返回 nil error，把上游截断伪装成
@@ -583,6 +652,9 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if err != nil {
 		timing := sseTimingObserver{ctx: responseTimingContext(c, resp)}
 		timing.failTimingCapture()
+		if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, resp.Header.Get("x-request-id"), err); handled {
+			return nil, resetErr
+		}
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}

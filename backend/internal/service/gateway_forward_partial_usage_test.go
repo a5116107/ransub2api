@@ -180,7 +180,7 @@ func TestGatewayService_Forward_StreamErrorWithoutUsageReturnsNilResult(t *testi
 
 	result, err := svc.Forward(context.Background(), c, account, parsed)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "missing terminal event")
+	require.Contains(t, err.Error(), "stream usage incomplete: missing message_start")
 	require.Nil(t, result, "无已观测 usage 时不应返回部分结果")
 }
 
@@ -292,12 +292,13 @@ func TestGatewayService_Forward_PostOutputSSEOverloadedErrorKeepsExistingStatus(
 
 	result, err := svc.Forward(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), parsed)
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.Usage.InputTokens)
 
 	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusForbidden, failoverErr.StatusCode)
-	require.JSONEq(t, errorJSON, string(failoverErr.ResponseBody))
+	require.False(t, errors.As(err, &failoverErr), "committed failure must preserve usage without replay")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "overloaded_error")
 	require.Zero(t, repo.tempCalls)
 	require.Contains(t, rec.Body.String(), "message_start")
 }

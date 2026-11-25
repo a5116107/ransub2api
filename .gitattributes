@@ -4,6 +4,9 @@ backend/migrations/*.sql text eol=lf
 # Go 源代码文件
 *.go text eol=lf
 
+# Reviewed embedded fingerprint bytes must be identical on every platform.
+backend/internal/pkg/modeltrace/data/unified_bank.json text eol=lf
+
 # 前端 源代码文件
 *.ts text eol=lf
 *.tsx text eol=lf

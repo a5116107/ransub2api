@@ -43,7 +43,7 @@ func TestContentModerationTestKeyLocalAdmissionReturns503(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = db.Close() })
 				mock.ExpectQuery("SELECT value FROM settings").WithArgs(cyberevidence.ConfigKey).WillReturnError(sql.ErrNoRows)
-				svc := service.ProvideContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, db, nil, cfg, moderationBlockedUpstream{err: admissionErr})
+				svc := service.ProvideContentModerationService(nil, settings, nil, nil, nil, nil, nil, nil, nil, db, nil, cfg, moderationBlockedUpstream{err: admissionErr})
 				t.Cleanup(svc.CyberEvidence().Close)
 				require.NoError(t, mock.ExpectationsWereMet())
 				router := gin.New()

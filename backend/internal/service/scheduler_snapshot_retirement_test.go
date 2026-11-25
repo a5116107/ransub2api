@@ -237,7 +237,10 @@ func TestSchedulerFallbackReturnsDBAccountsWhenBucketRetired(t *testing.T) {
 	bucket := SchedulerBucket{GroupID: 63, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
 	cache := newRetirementRaceCache()
 	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
-	repo := &fullRebuildAccountRepo{}
+	repo := &mockAccountRepoForPlatform{
+		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: bucket.GroupID}}}},
+	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
 		RunMode: config.RunModeStandard,
 		Gateway: config.GatewayConfig{Scheduling: config.GatewaySchedulingConfig{

@@ -54,6 +54,7 @@ func firstNonEmpty(values ...string) string {
 // SettingHandler 系统设置处理器
 type SettingHandler struct {
 	keyRisk                  *keyrisk.Service
+	keyRiskKeys              keyRiskAPIKeys
 	ipAuditPenaltyRelease    func(context.Context, int64, int64, string) (service.SecurityPenaltySummary, error)
 	ipAuditLogs              *service.AuditLogService
 	ipAuditPenaltySummary    func(context.Context, int64) (service.SecurityPenaltySummary, error)
@@ -414,10 +415,12 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PrismBrowserBaseURL:                  settings.PrismBrowserBaseURL,
 		PrismBrowserAPIKeyConfigured:         settings.PrismBrowserAPIKeyConfigured,
 
-		GrokDefaultTextModel:           settings.GrokDefaultTextModel,
-		GrokCrossClientModelMapEnabled: settings.GrokCrossClientModelMapEnabled,
-		GrokDefaultBaseURLMode:         settings.GrokDefaultBaseURLMode,
-		GrokVideoSourceURLEnabled:      settings.GrokVideoSourceURLEnabled,
+		GrokDefaultTextModel:                 settings.GrokDefaultTextModel,
+		GrokCrossClientModelMapEnabled:       settings.GrokCrossClientModelMapEnabled,
+		GrokDefaultBaseURLMode:               settings.GrokDefaultBaseURLMode,
+		GrokVideoSourceURLEnabled:            settings.GrokVideoSourceURLEnabled,
+		OpenAI409OmitEncryptedHistoryEnabled: settings.OpenAI409OmitEncryptedHistoryEnabled,
+		OpenAI400OmitEncryptedHistoryEnabled: settings.OpenAI400OmitEncryptedHistoryEnabled,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 		PelicanShowcaseEnabled:   settings.PelicanShowcaseEnabled,
@@ -428,6 +431,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		ModelPlazaRequireAuth:   settings.ModelPlazaRequireAuth,
 		PluginManagementEnabled: settings.PluginManagementEnabled,
 		ModelPlazaDescription:   settings.ModelPlazaDescription,
+		ModelPlazaUSDToCNYRate:  settings.ModelPlazaUSDToCNYRate,
+		ModelPlazaCurrency:      settings.ModelPlazaCurrency,
 
 		SupportTicketEnabled: settings.SupportTicketEnabled,
 		SupportTicket:        settings.SupportTicket,

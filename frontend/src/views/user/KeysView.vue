@@ -123,7 +123,7 @@
           :selection-label="(key: ApiKey) => t('keys.bulkEdit.selectKey', { name: key.name })"
           @update:selected-keys="handleSelectionChange"
           :server-side-sort="true"
-          default-sort-key="created_at"
+          default-sort-key="usage"
           default-sort-order="desc"
           @sort="handleSort"
         >
@@ -463,8 +463,9 @@
               <button
                 v-if="isCodexQuickConfigPlatform(row.group?.platform)"
                 @click="openCodexQuickConfigModal(row)"
+                :disabled="row.group?.platform === 'openai' && publicSettingsLoading"
                 data-testid="quick-config-button"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 disabled:opacity-50 dark:hover:bg-primary-900/20 dark:hover:text-primary-400"
                 :title="t('keys.quickConfigure')"
               >
                 <Icon name="download" size="sm" />
@@ -473,7 +474,9 @@
               <!-- Use Key Button -->
               <button
                 @click="openUseKeyModal(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
+                :disabled="row.group?.platform === 'openai' && publicSettingsLoading"
+                data-testid="use-key-button"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 disabled:opacity-50 dark:hover:bg-green-900/20 dark:hover:text-green-400"
               >
                 <Icon name="terminal" size="sm" />
                 <span class="text-xs">{{ t('keys.useKey') }}</span>
@@ -482,10 +485,23 @@
               <button
                 v-if="!publicSettings?.hide_ccs_import_button"
                 @click="importToCcswitch(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
+                :disabled="row.group?.platform === 'openai' && publicSettingsLoading"
+                data-testid="ccswitch-import-button"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
               >
                 <Icon name="upload" size="sm" />
                 <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
+              </button>
+              <button
+                type="button"
+                @click="importToMagpie(row)"
+                :disabled="publicSettingsLoading"
+                data-testid="magpie-import-button"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
+                :title="t('keys.magpieImport.preview')"
+              >
+                <Icon name="externalLink" size="sm" />
+                <span class="text-xs">{{ t('keys.importToMagpie') }}</span>
               </button>
               <!-- Toggle Status Button -->
               <button
@@ -616,6 +632,7 @@
           <Select
             :key="showEditModal ? 'edit' : createProvider"
             id="key-form-group"
+            match-trigger-width
             :aria-label="t('keys.groupLabel')"
             v-model="formData.group_id"
             :options="formGroupOptions"
@@ -720,6 +737,7 @@
             </button>
             <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.apiKeyModelPolicy" :user-id="authStore.user?.id" />
             <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.apiKeyLongContext" :user-id="authStore.user?.id" compact />
+            <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.apiKeyContextTokenLimit" :user-id="authStore.user?.id" compact />
           </div>
           <p class="mt-2 text-sm text-gray-500 dark:text-dark-300">{{ t('apiKeyModelPolicy.scopeHint') }}</p>
         </div>
@@ -1209,6 +1227,7 @@
       :show="showUseKeyModal"
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
+      :site-name="publicSettings?.site_name"
       :platform="selectedKey?.group?.platform || null"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
@@ -1218,6 +1237,7 @@
       :show="showCodexQuickConfigModal"
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
+      :site-name="publicSettings?.site_name"
       :platform="selectedCodexQuickConfigPlatform"
       @close="closeCodexQuickConfigModal"
     />
@@ -1385,7 +1405,8 @@ import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
-import { isCodexQuickConfigPlatform } from '@/utils/codexQuickConfig'
+import { isCodexQuickConfigPlatform, resolveSiteProviderName } from '@/utils/codexQuickConfig'
+import { buildMagpieImportLink } from '@/utils/magpieImport'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1419,7 +1440,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: true },
   { key: 'current_concurrency', label: t('keys.concurrencyAndWaiting'), sortable: true },
-  { key: 'usage', label: t('keys.usage'), sortable: false },
+  { key: 'usage', label: t('keys.usage'), sortable: true },
   { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
   { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
   { key: 'status', label: t('common.status'), sortable: true },
@@ -1549,6 +1570,8 @@ const onUsageDateRangeChange = (range: { startDate: string; endDate: string; pre
   usageStartDate.value = range.startDate
   usageEndDate.value = range.endDate
   usagePreset.value = range.preset
+  selectedIds.value = []
+  pagination.value.page = 1
   void loadApiKeys()
 }
 const userGroupRates = ref<Record<number, number>>({})
@@ -1648,7 +1671,7 @@ const pagination = ref({
   pages: 0
 })
 const sortState = ref({
-  sort_by: 'created_at',
+  sort_by: 'usage',
   sort_order: 'desc' as 'asc' | 'desc'
 })
 
@@ -1676,6 +1699,7 @@ const selectedCodexQuickConfigPlatform = computed(() => {
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
+const publicSettingsLoading = ref(true)
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1875,6 +1899,11 @@ const loadApiKeys = async () => {
   usageLoading.value = true
   usageFailed.value = false
   usageStats.value = {}
+  const range = {
+    start_date: usageStartDate.value,
+    end_date: usageEndDate.value,
+    timezone: getBrowserTimeZone()
+  }
   try {
     // Build filters
     const filters: {
@@ -1883,12 +1912,16 @@ const loadApiKeys = async () => {
       group_id?: number | string
       sort_by?: string
       sort_order?: 'asc' | 'desc'
+      start_date?: string
+      end_date?: string
+      timezone?: string
     } = {}
     if (filterSearch.value) filters.search = filterSearch.value
     if (filterStatus.value) filters.status = filterStatus.value
     if (filterGroupId.value !== '') filters.group_id = filterGroupId.value
     filters.sort_by = sortState.value.sort_by
     filters.sort_order = sortState.value.sort_order
+    if (sortState.value.sort_by === 'usage') Object.assign(filters, range)
 
     const response = await keysAPI.list(pagination.value.page, pagination.value.page_size, filters, {
       signal
@@ -1901,11 +1934,7 @@ const loadApiKeys = async () => {
 
     usageLoading.value = response.items.length > 0
     if (response.items.length > 0) {
-      void loadUsageStats(response.items.map((k) => k.id), controller, {
-        start_date: usageStartDate.value,
-        end_date: usageEndDate.value,
-        timezone: getBrowserTimeZone()
-      })
+      void loadUsageStats(response.items.map((k) => k.id), controller, range)
     }
 
   } catch (error) {
@@ -1982,6 +2011,8 @@ const loadPublicSettings = async () => {
     publicSettings.value = await authAPI.getPublicSettings()
   } catch (error) {
     console.error('Failed to load public settings:', error)
+  } finally {
+    publicSettingsLoading.value = false
   }
 }
 
@@ -2371,6 +2402,33 @@ const resetRateLimitUsage = async () => {
   }
 }
 
+const importToMagpie = (row: ApiKey) => {
+  const settings = publicSettings.value
+  if (!settings) {
+    appStore.showError(t('keys.magpieImport.settingsUnavailable'))
+    return
+  }
+  const result = buildMagpieImportLink({
+    dashboardOrigin: window.location.origin,
+    baseUrl: settings.api_base_url,
+    siteName: settings.site_name,
+    row
+  })
+  if ('error' in result) {
+    appStore.showError(t(`keys.magpieImport.${result.error}`))
+    return
+  }
+
+  // Launch from the click itself. Browsers cannot confirm whether the app opened.
+  try {
+    window.open(result.url, '_self')
+  } catch {
+    appStore.showError(t('keys.magpieImport.openHelp'))
+    return
+  }
+  appStore.showInfo(t('keys.magpieImport.openHelp'), 6500)
+}
+
 const importToCcswitch = (row: ApiKey) => {
   const platform = row.group?.platform || 'anthropic'
 
@@ -2390,7 +2448,10 @@ const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
   const platform = row.group?.platform || 'anthropic'
 
   const usageScript = CC_SWITCH_USAGE_SCRIPT
-  const providerName = (publicSettings.value?.site_name || 'sub2api').trim() || 'sub2api'
+  const siteName = publicSettings.value?.site_name
+  const providerName = platform === 'openai'
+    ? resolveSiteProviderName(siteName)
+    : siteName?.trim() || 'sub2api'
   const deeplink = buildCcSwitchImportDeeplink({
     baseUrl,
     platform,

@@ -236,7 +236,11 @@ func TestIssue758HTTPOAuthPreviousResponseCannotPromiseRecovery(t *testing.T) {
 						anchors++
 						switch {
 						case strings.Contains(key, "http-response-owner:v1:"):
-							require.Equal(t, "v1:100:99", value)
+							require.EqualValues(t, 2, gjson.Get(value, "version").Int())
+							require.Equal(t, "100", gjson.Get(value, "user").String())
+							require.Equal(t, "99", gjson.Get(value, "key").String())
+							require.EqualValues(t, 1, gjson.Get(value, "scope.AccountID").Int())
+							require.NotEmpty(t, gjson.Get(value, "scope_hash").String())
 						case strings.Contains(key, "http-response-owner:user:"):
 							require.Equal(t, "100", value)
 						case strings.Contains(key, "http-response-owner:key:"):

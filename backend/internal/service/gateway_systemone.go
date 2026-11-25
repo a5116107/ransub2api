@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 type SystemOneForwardResult struct {
@@ -31,6 +32,10 @@ func (e *SystemOneUpstreamError) Error() string {
 }
 
 func (s *GatewayService) ForwardSystemOne(ctx context.Context, c *gin.Context, account *Account, body []byte) (*SystemOneForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	started := time.Now()
 	if account == nil || !account.IsTypeSafe() || account.Type != AccountTypeAPIKey {
 		return nil, errors.New("invalid typesafe account")
@@ -42,6 +47,15 @@ func (s *GatewayService) ForwardSystemOne(ctx context.Context, c *gin.Context, a
 	baseURL, err := s.validateUpstreamBaseURL(account.GetTypeSafeBaseURL())
 	if err != nil {
 		return nil, err
+	}
+	mappedModel := firstNonEmpty(account.GetMappedModel(typesafe.JevLatestModel), typesafe.JevLatestModel)
+	var upstreamModel string
+	if mappedModel != typesafe.JevLatestModel {
+		body, err = sjson.SetBytes(body, "model", mappedModel)
+		if err != nil {
+			return nil, fmt.Errorf("apply TypeSafe account model mapping: %w", err)
+		}
+		upstreamModel = mappedModel
 	}
 	req, err := typesafe.NewSystemOneRequest(ctx, baseURL, key, body)
 	if err != nil {
@@ -55,6 +69,7 @@ func (s *GatewayService) ForwardSystemOne(ctx context.Context, c *gin.Context, a
 	if err := checkAPIKeyLongContextBeforeForward(ctx, c, s.billingService, body); err != nil {
 		return nil, err
 	}
+	SetOpsUpstreamModel(c, upstreamModel)
 	resp, err := s.doGatewayUpstream(req, proxyURL, account)
 	if err != nil {
 		return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
@@ -94,6 +109,7 @@ func (s *GatewayService) ForwardSystemOne(ctx context.Context, c *gin.Context, a
 			UpstreamHeaders:       resp.Header.Clone(),
 			Usage:                 ClaudeUsage{InputTokens: decoded.Usage.InputTokens, OutputTokens: decoded.Usage.OutputTokens},
 			Model:                 typesafe.JevLatestModel,
+			UpstreamModel:         upstreamModel,
 			UpstreamResponseModel: decoded.Model,
 			Duration:              time.Since(started),
 		},

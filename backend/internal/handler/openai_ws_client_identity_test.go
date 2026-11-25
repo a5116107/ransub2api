@@ -82,9 +82,11 @@ type issue600SwitchRepo struct {
 func (r *issue600SwitchRepo) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
 
 type issue600FixtureOptions struct {
-	switchAccount    bool
-	switchAfterTurns int
-	disableCyber     bool
+	moderationSettings map[string]string
+	modelMapping       map[string]string
+	switchAccount      bool
+	switchAfterTurns   int
+	disableCyber       bool
 }
 
 type issue600Upstream struct {
@@ -211,6 +213,9 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	http.DefaultClient = &http.Client{Transport: route}
 	t.Cleanup(func() { http.DefaultClient = oldClient })
 	settings := map[string]string{service.SettingKeyCyberSessionIdentityStrictEnabled: strconv.FormatBool(strict)}
+	for key, value := range opts.moderationSettings {
+		settings[key] = value
+	}
 	if opts.disableCyber {
 		settings[service.SettingKeyCyberSessionBlockEnabled] = "false"
 	}
@@ -218,7 +223,7 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	if addr := os.Getenv("ISSUE600_REDIS_ADDR"); addr != "" {
 		gatewayCache = testutil.NewIsolatedRedisGatewayCache(t, addr)
 	}
-	h := newOpenAIWSPassthroughHandlerHarnessWithCache(t, upstream.URL, headers, settings, gatewayCache, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
+	h := newOpenAIWSPassthroughHandlerHarnessWithKey(t, upstream.URL, headers, settings, gatewayCache, func(key *service.APIKey) { key.ModelMapping = opts.modelMapping }, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
 		a.Extra["codex_fingerprint_mode"] = "off"
 		a.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 		if namespace != "none" {
@@ -281,7 +286,9 @@ func issue600Finish(t *testing.T, h *openAIWSPassthroughHandlerHarness, headers 
 	_ = h.clientConn.CloseNow()
 	select {
 	case <-h.handlerDone:
-	case <-time.After(5 * time.Second):
+	// Passthrough may drain usage for 1.2s, then coder/websocket allows a
+	// five-second upstream close handshake. The fixture must bound both.
+	case <-time.After(8 * time.Second):
 		t.Fatal("handler did not release connection")
 	}
 	select {

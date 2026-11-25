@@ -45,7 +45,7 @@ func TestScopedAdminReviewGroupPriorityAndStatus(t *testing.T) {
 	cache := &scopedReviewSchedulerCache{accounts: make(map[int64]*service.Account)}
 	repo := NewAdminAccountRepository(client, db, cache)
 	groups := NewAdminGroupRepository(client, db)
-	admin := service.NewAdminService(nil, nil, groups, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	admin := service.NewAdminService(nil, nil, groups, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	scoped, ok := admin.(service.ScopedAdminAccounts)
 	require.True(t, ok)
 	ctx := context.Background()

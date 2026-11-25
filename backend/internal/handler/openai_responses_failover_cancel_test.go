@@ -56,6 +56,20 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 
 func newOpenAIResponsesFailoverTestHandlerWithCache(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
 	t.Helper()
+	return newOpenAIResponsesFailoverTestHandlerWithSettings(t, upstream, cache, nil, fixtureAccounts...)
+}
+
+func newOpenAIResponsesFailoverTestHandlerWithSettings(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, settings *service.SettingService, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
+	t.Helper()
+	return newOpenAIResponsesFailoverTestHandlerWithUsage(t, upstream, cache, settings, nil, fixtureAccounts...)
+}
+
+func newOpenAIResponsesFailoverTestHandlerWithUsage(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, settings *service.SettingService, usage service.UsageLogRepository, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
+	return newOpenAIResponsesFailoverTestHandlerWithConcurrency(t, upstream, cache, settings, usage, nil, fixtureAccounts...)
+}
+
+func newOpenAIResponsesFailoverTestHandlerWithConcurrency(t *testing.T, upstream service.HTTPUpstream, cache service.GatewayCache, settings *service.SettingService, usage service.UsageLogRepository, concurrency *service.ConcurrencyService, fixtureAccounts ...service.Account) *OpenAIGatewayHandler {
+	t.Helper()
 	accounts := []service.Account{
 		{
 			ID:          1,
@@ -92,7 +106,7 @@ func newOpenAIResponsesFailoverTestHandlerWithCache(t *testing.T, upstream servi
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,
 		nil,
-		nil,
+		usage,
 		nil,
 		nil,
 		nil,
@@ -100,23 +114,26 @@ func newOpenAIResponsesFailoverTestHandlerWithCache(t *testing.T, upstream servi
 		cache,
 		cfg,
 		nil,
-		nil,
-		nil,
+		concurrency,
+		service.NewBillingService(cfg, nil),
 		nil,
 		nil,
 		upstream,
+		&service.DeferredService{},
 		nil,
 		nil,
 		nil,
 		nil,
 		nil,
-		nil,
-		nil,
+		settings,
 		nil,
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
-	concurrencyService := service.NewConcurrencyService(nil)
+	concurrencyService := concurrency
+	if concurrencyService == nil {
+		concurrencyService = service.NewConcurrencyService(nil)
+	}
 	handler := NewOpenAIGatewayHandler(
 		gatewayService,
 		concurrencyService,
@@ -189,19 +206,30 @@ func TestOpenAIGatewayHandlerResponses_FailoverAbortsWhenClientDisconnected(t *t
 	require.Equal(t, 520, events[0].UpstreamStatusCode)
 }
 
-// TestOpenAIGatewayHandlerResponses_FailoverContinuesForConnectedClient 回归
-// 守卫：客户端在线时 failover 行为不变——切换到账号 2，两个账号都 520 后按
-// 耗尽返回 502。
+// Connected OAuth requests retry transient failures on the original account.
+// API-key accounts retain their existing bounded cross-account failover.
 func TestOpenAIGatewayHandlerResponses_FailoverContinuesForConnectedClient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-
-	upstream := &openAIResponsesFailoverCancelUpstream{}
-	handler := newOpenAIResponsesFailoverTestHandler(t, upstream)
-	c, rec := newOpenAIResponsesFailoverTestContext(t, nil)
-
-	handler.Responses(c)
-
-	require.Equal(t, []int64{1, 2}, upstream.calls(), "在线客户端应正常切换账号")
-	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	for _, tc := range []struct {
+		kind     string
+		accounts []int64
+	}{
+		{service.AccountTypeOAuth, []int64{1, 1, 1, 1}},
+		{service.AccountTypeAPIKey, []int64{1, 2}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			accounts := issue715Accounts()
+			for i := range accounts {
+				accounts[i].Type = tc.kind
+				accounts[i].Credentials = map[string]any{"api_key": "fixture-key", "access_token": "fixture-access"}
+			}
+			upstream := &openAIResponsesFailoverCancelUpstream{}
+			handler := newOpenAIResponsesFailoverTestHandler(t, upstream, accounts...)
+			c, rec := newOpenAIResponsesFailoverTestContext(t, nil)
+			handler.Responses(c)
+			require.Equal(t, tc.accounts, upstream.calls())
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+		})
+	}
 }

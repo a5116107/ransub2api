@@ -365,7 +365,7 @@ func TestPrismSharedKeyAdmissionReselectsBeforeSending(t *testing.T) {
 
 func TestOpenAIResponses_HTTPContinuationScopeRejectsAndRecovers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	repo := &initialAdmissionRepo{}
+	repo := &initialAdmissionRepo{cache: testutil.NewRedisGatewayCache(t)}
 	upstream := &excelBPSFailoverUpstream{answer: func(int) *http.Response { return excelBPSCompleted() }}
 	h := newInitialAdmissionHandler(t, repo, upstream)
 	repo.accounts = repo.accounts[:1]
@@ -376,6 +376,7 @@ func TestOpenAIResponses_HTTPContinuationScopeRejectsAndRecovers(t *testing.T) {
 	origin := service.OpenAIResponseOwner{UserID: 100, APIKeyID: 99, Scope: service.OpenAIWSContinuationScope{
 		AccountID: account.ID, RouteFingerprint: service.AccountRouteFingerprint(account), Model: "gpt-6-astra"}}
 	require.NoError(t, h.gatewayService.BindOpenAIResponseOwner(t.Context(), 3131, "resp_http_scope", origin))
+	require.NoError(t, service.NewOpenAIWSStateStore(repo.cache).BindResponseAccount(t.Context(), 3131, "resp_http_scope", account.ID, time.Minute))
 	for _, changed := range []bool{true, false} {
 		account.Credentials["api_key"] = "creation-fixture"
 		if changed {

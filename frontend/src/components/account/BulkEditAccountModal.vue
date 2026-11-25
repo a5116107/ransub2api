@@ -66,6 +66,7 @@
               <p class="input-hint">{{ t('admin.accounts.openai.excelBPSModelsHint') }}</p>
             </div>
             <p class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.accounts.openai.excelBPSNotice') }}</p>
+            <ExcelBPSSearchOptions v-model:enabled="excelBPSWebSearch" v-model:automatic="excelBPSWebSearchAuto" />
             <div class="mt-3">
               <label class="flex items-center gap-2">
                 <input v-model="excelBPSOmitUnsupportedTools" type="checkbox"
@@ -214,6 +215,52 @@
               ]"
             />
           </button>
+        </div>
+      </div>
+
+      <!-- OpenAI passthrough model filtering -->
+      <div
+        v-if="allOpenAIPassthroughCapable"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-passthrough-model-filter-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-passthrough-model-filter-enabled"
+            >
+              {{ t('admin.accounts.openai.passthroughModelFilter') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.passthroughModelFilterDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIPassthroughModelFilter"
+            id="bulk-edit-openai-passthrough-model-filter-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-passthrough-model-filter-body"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-passthrough-model-filter-body"
+          :class="!enableOpenAIPassthroughModelFilter && 'pointer-events-none opacity-50'"
+          role="group"
+          aria-labelledby="bulk-edit-openai-passthrough-model-filter-label"
+        >
+          <label class="flex items-center gap-2 text-sm">
+            <input
+              v-model="openaiPassthroughModelFilterEnabled"
+              type="checkbox"
+              data-testid="bulk-openai-passthrough-model-filter"
+              :disabled="!enableOpenAIPassthroughModelFilter"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            {{ t('common.enabled') }}
+            <NewFeatureBadge v-if="authStore.user?.id != null" :notice-id="NEW_FEATURE_NOTICES.passthroughModelFilter" :user-id="authStore.user?.id" />
+          </label>
         </div>
       </div>
 
@@ -385,12 +432,20 @@
           <input
             v-model="enableModelRestriction"
             id="bulk-edit-model-restriction-enabled"
+            :disabled="syncBusy"
             type="checkbox"
             aria-controls="bulk-edit-model-restriction-body"
             class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
           />
         </div>
 
+        <BatchUpstreamWhitelist
+          v-if="syncAdminId != null"
+          v-show="syncBusy || syncRows.length > 0 || (modelRestrictionMode === 'whitelist' && !isOpenAIModelRestrictionDisabled)"
+          :rows="syncRows" :busy="syncBusy" :valid="syncValid" :user-id="syncAdminId"
+          :disabled="submitting || checkingSubmit || showMixedChannelWarning"
+          @run="startWhitelistSync" @stop="stopSync"
+        />
         <div
           id="bulk-edit-model-restriction-body"
           :class="!enableModelRestriction && 'pointer-events-none opacity-50'"
@@ -797,7 +852,10 @@
             </p>
 
             <HeaderOverrideEditor
+
+              :user-id="authStore.user?.id"
               :rows="headerOverrideRows"
+              :allow-variables="headerOverrideAllowVariables"
               @update:rows="headerOverrideRows = $event"
             />
           </div>
@@ -1221,21 +1279,24 @@
           aria-labelledby="bulk-edit-openai-endpoint-capabilities-label"
         >
           <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <label
+            <div
               v-for="option in openAIEndpointCapabilityOptions"
               :key="option.value"
-              class="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
+              class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
             >
-              <input
-                type="checkbox"
-                :disabled="!enableOpenAIEndpointCapabilities"
-                class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
-                :data-testid="`bulk-edit-openai-endpoint-capability-${option.value}`"
-                :checked="openAIEndpointCapabilities.includes(option.value)"
-                @change="toggleOpenAIEndpointCapability(option.value, $event)"
-              />
-              <span class="text-gray-700 dark:text-gray-200">{{ option.label }}</span>
-            </label>
+              <label class="flex flex-1 cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :disabled="!enableOpenAIEndpointCapabilities"
+                  class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+                  :data-testid="`bulk-edit-openai-endpoint-capability-${option.value}`"
+                  :checked="openAIEndpointCapabilities.includes(option.value)"
+                  @change="toggleOpenAIEndpointCapability(option.value, $event)"
+                />
+                <span class="text-gray-700 dark:text-gray-200">{{ option.label }}</span>
+              </label>
+              <NewFeatureBadge v-if="option.value === 'videos'" :notice-id="NEW_FEATURE_NOTICES.openaiVideos" :user-id="authStore.user?.id" />
+            </div>
           </div>
         </div>
       </div>
@@ -1519,7 +1580,7 @@
         <button
           type="submit"
           form="bulk-edit-account-form"
-          :disabled="submitting"
+          :disabled="submitting || checkingSubmit || syncBusy"
           class="btn btn-primary"
         >
           <svg
@@ -1563,11 +1624,16 @@
 </template>
 
 <script setup lang="ts">
+import { useBatchUpstreamWhitelist } from '@/composables/useBatchUpstreamWhitelist'
+import BatchUpstreamWhitelist from './BatchUpstreamWhitelist.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier } from '@/utils/accountCost'
 
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ExcelBPSModeSwitches from './ExcelBPSModeSwitches.vue'
+import ExcelBPSSearchOptions from './ExcelBPSSearchOptions.vue'
 import type { ExcelBPSMode } from '@/utils/excelBPSDefaults'
 import { useExcelBPSDefaults } from '@/composables/useExcelBPSDefaults'
 import { DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES, MAX_BPS_RECOVERY_INTERVAL_MINUTES, isValidBPSRecoveryInterval, bpsRecoveryIntervalOrDefault } from '@/utils/excelBPSRecovery'
@@ -1620,6 +1686,7 @@ import type { OpenAIWSMode } from '@/utils/openaiWsMode'
 interface Props {
   show: boolean
   accountIds: number[]
+  filteredPreview?: boolean
   selectedPlatforms: AccountPlatform[]
   selectedTypes: AccountType[]
   target?: {
@@ -1638,6 +1705,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   updated: []
+  whitelistsSaved: []
 }>()
 
 const { t } = useI18n()
@@ -1650,6 +1718,19 @@ const targetMode = computed(() => props.target?.mode ?? 'selected')
 const targetAccountIds = computed(() => props.target?.mode === 'selected'
   ? props.target.accountIds ?? props.accountIds
   : props.accountIds)
+const syncAdminId = computed(() => props.show && authStore.isAdmin && targetMode.value === 'selected' && !props.filteredPreview
+  ? authStore.user?.id ?? null : null)
+const { rows: syncRows, busy: syncBusy, valid: syncValid, run: runSync, stop: stopSync, leave: leaveSync } = useBatchUpstreamWhitelist(
+  () => syncAdminId.value,
+  () => props.target ? props.target.accountIds ?? [] : props.accountIds,
+  () => emit('whitelistsSaved')
+)
+function startWhitelistSync(retry: boolean) {
+  if (submitting.value || checkingSubmit.value || showMixedChannelWarning.value || syncBusy.value || !syncValid.value || syncAdminId.value == null) return
+  // A subsequent form submit must not overwrite individual results with the shared draft.
+  enableModelRestriction.value = false
+  void runSync(retry)
+}
 const targetPreviewCount = computed(() => props.target?.previewCount ?? props.accountIds.length)
 const targetSelectedPlatforms = computed(() => props.target?.selectedPlatforms ?? props.selectedPlatforms)
 const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.selectedTypes)
@@ -1758,6 +1839,12 @@ const enableOpenAIModelAliases = ref(false)
 const openaiModelAliases = ref(true)
 const enableCustomErrorCodes = ref(false)
 const enableInterceptWarmup = ref(false)
+// 身份上报变量仅 api_key 账号可用：所选账号里只要混有其它类型就不开放
+const headerOverrideAllowVariables = computed(
+  () =>
+    targetSelectedTypes.value.length > 0 &&
+    targetSelectedTypes.value.every((type) => type === 'apikey')
+)
 const enableHeaderOverride = ref(false)
 const enableProxy = ref(false)
 const enableConcurrency = ref(false)
@@ -1772,6 +1859,7 @@ const enableStatus = ref(false)
 const enableGroups = ref(false)
 const enableExcelBPS = ref(false)
 const enableOpenAIPassthrough = ref(false)
+const enableOpenAIPassthroughModelFilter = ref(false)
 const enableOpenAIFlattenNamespaces = ref(false)
 const enableOpenAILongContextBilling = ref(false)
 const enableOpenAIEndpointCapabilities = ref(false)
@@ -1787,6 +1875,8 @@ const enableRpmLimit = ref(false)
 
 // State - field values
 const submitting = ref(false)
+const checkingSubmit = ref(false)
+let dialogGeneration = 0
 const showMixedChannelWarning = ref(false)
 const mixedChannelWarningMessage = ref('')
 const pendingUpdatesForConfirm = ref<Record<string, unknown> | null>(null)
@@ -1818,6 +1908,8 @@ const excelBPSAutoRecoverOn403 = ref(false)
 const excelBPSRecoveryIntervalMinutes = ref<number | string>(DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES)
 const excelBPSOmitUnsupportedTools = ref(false)
 const excelBPSIgnoreEncryptedContent = ref(false)
+const excelBPSWebSearch = ref(false)
+const excelBPSWebSearchAuto = ref(false)
 const excelBPSAutoMoveOn403 = ref(false)
 const excelBPS403TargetGroupID = ref<number | string>('')
 const bpsDefaults = useExcelBPSDefaults({
@@ -1829,6 +1921,7 @@ const bpsDefaults = useExcelBPSDefaults({
     all_models: excelBPSAllModels, models: excelBPSModels,
     omit_unsupported_tools: excelBPSOmitUnsupportedTools,
     ignore_encrypted_content: excelBPSIgnoreEncryptedContent,
+    web_search: excelBPSWebSearch, web_search_auto: excelBPSWebSearchAuto,
     auto_disable_on_403: excelBPSAutoDisableOn403, auto_recover_on_403: excelBPSAutoRecoverOn403,
     recovery_interval_minutes: excelBPSRecoveryIntervalMinutes,
     auto_move_on_403: excelBPSAutoMoveOn403, target_group_id: excelBPS403TargetGroupID,
@@ -1845,6 +1938,7 @@ const excelBPS403GroupOptions = computed(() => [
     .map(group => ({ value: group.id, label: group.name }))
 ])
 const openaiPassthroughEnabled = ref(false)
+const openaiPassthroughModelFilterEnabled = ref(false)
 // Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
@@ -1903,7 +1997,9 @@ const isOpenAIModelRestrictionDisabled = computed(
   () =>
     allOpenAIPassthroughCapable.value &&
     enableOpenAIPassthrough.value &&
-    openaiPassthroughEnabled.value
+    openaiPassthroughEnabled.value &&
+    enableOpenAIPassthroughModelFilter.value &&
+    !openaiPassthroughModelFilterEnabled.value
 )
 
 const openAIWSModeOptions = computed(() => [
@@ -1939,7 +2035,8 @@ const openAIEndpointCapabilityOptions = computed<
 >(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
   { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
-  { value: 'seedance', label: 'Seedance (Ark)' }
+  { value: 'seedance', label: 'Seedance (Ark)' },
+  { value: 'videos', label: 'OpenAI Videos' }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
@@ -1949,7 +2046,7 @@ const openAIResponsesModeApplicable = computed(
 )
 
 const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance']
+  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance', 'videos']
   const selected = allowed.filter((value) => values.includes(value))
   return selected.length > 0 ? selected : ['chat_completions', 'embeddings'] as OpenAIEndpointCapability[]
 }
@@ -2154,6 +2251,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_excel_bps_403_recovery_interval_minutes = bpsRecoveryIntervalOrDefault(excelBPSRecoveryIntervalMinutes.value)
     extra.openai_excel_bps_omit_unsupported_tools = excelBPSEnabled.value && excelBPSOmitUnsupportedTools.value
     extra.openai_excel_bps_ignore_encrypted_content = excelBPSEnabled.value && excelBPSIgnoreEncryptedContent.value
+    extra.openai_excel_bps_web_search = excelBPSEnabled.value && excelBPSWebSearch.value
+    extra.openai_excel_bps_web_search_auto = excelBPSEnabled.value && excelBPSWebSearch.value && excelBPSWebSearchAuto.value
     extra.openai_excel_bps_auto_move_on_403 = excelBPSEnabled.value && excelBPSAutoMoveOn403.value
     extra.openai_excel_bps_403_target_group_id = excelBPSEnabled.value && excelBPSAutoMoveOn403.value
       ? Number(excelBPS403TargetGroupID.value)
@@ -2166,6 +2265,11 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     if (!openaiPassthroughEnabled.value) {
       extra.openai_oauth_passthrough = false
     }
+  }
+
+  // extra 按键合并；未勾选修改时省略该键，保留各账号原有的筛选设置。
+  if (enableOpenAIPassthroughModelFilter.value && allOpenAIPassthroughCapable.value) {
+    ensureExtra().openai_passthrough_model_filter = openaiPassthroughModelFilterEnabled.value
   }
 
   // 同时校验可见性：勾选后又改了目标筛选条件时，不应把该键写到非 OAuth 账号上
@@ -2181,7 +2285,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (applyOpenAIEndpointCapabilities) {
     credentials.openai_capabilities =
-      openAIEndpointCapabilities.value.length === 2 && !openAIEndpointCapabilities.value.includes('seedance')
+      openAIEndpointCapabilities.value.length === 2 && openAIEndpointCapabilities.value.includes('chat_completions') && openAIEndpointCapabilities.value.includes('embeddings')
         ? null
         : [...openAIEndpointCapabilities.value]
     credentialsChanged = true
@@ -2347,6 +2451,8 @@ const canPreCheck = () =>
   (targetSelectedPlatforms.value[0] === 'antigravity' || targetSelectedPlatforms.value[0] === 'anthropic')
 
 const handleClose = () => {
+  dialogGeneration++
+  leaveSync()
   showMixedChannelWarning.value = false
   mixedChannelWarningMessage.value = ''
   pendingUpdatesForConfirm.value = null
@@ -2358,12 +2464,14 @@ const handleClose = () => {
 const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise<boolean> => {
   if (!canPreCheck()) return true
   if (mixedChannelConfirmed.value) return true
+  const generation = dialogGeneration
 
   try {
     const result = await adminAPI.accounts.checkMixedChannelRisk({
       platform: targetSelectedPlatforms.value[0],
       group_ids: groupIds.value
     })
+    if (generation !== dialogGeneration || !props.show) return false
     if (!result.has_risk) return true
 
     pendingUpdatesForConfirm.value = built
@@ -2371,13 +2479,14 @@ const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise
     showMixedChannelWarning.value = true
     return false
   } catch (error: any) {
+    if (generation !== dialogGeneration || !props.show) return false
     appStore.showError(error.message || t('admin.accounts.bulkEdit.failed'))
     return false
   }
 }
 
 const handleSubmit = async () => {
-  if (bpsDefaults.loading.value) return
+  if (bpsDefaults.loading.value || syncBusy.value || submitting.value || checkingSubmit.value) return
   if (targetMode.value === 'selected' && targetAccountIds.value.length === 0) {
     appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
     return
@@ -2387,6 +2496,7 @@ const handleSubmit = async () => {
     enableBaseUrl.value ||
     (enableExcelBPS.value && allOpenAIOAuthOnly.value) ||
     enableOpenAIPassthrough.value ||
+    (enableOpenAIPassthroughModelFilter.value && allOpenAIPassthroughCapable.value) ||
     enableOpenAIFlattenNamespaces.value ||
     (enableOpenAILongContextBilling.value && allOpenAIPassthroughCapable.value) ||
     (enableOpenAIEndpointCapabilities.value && allOpenAIAPIKey.value) ||
@@ -2451,7 +2561,9 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.headerOverride.bulkEmptyRows'))
       return
     }
-    const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
+    const headerError = validateHeaderOverrideRows(headerOverrideRows.value, {
+      allowVariables: headerOverrideAllowVariables.value
+    })
     if (headerError) {
       appStore.showError(t(`admin.accounts.headerOverride.${headerError}`))
       return
@@ -2469,10 +2581,15 @@ const handleSubmit = async () => {
     return
   }
 
-  const canContinue = await preCheckMixedChannelRisk(built)
-  if (!canContinue) return
-
-  await submitBulkUpdate(built)
+  checkingSubmit.value = true
+  const generation = dialogGeneration
+  try {
+    const canContinue = await preCheckMixedChannelRisk(built)
+    if (!canContinue || !props.show || generation !== dialogGeneration) return
+    await submitBulkUpdate(built)
+  } finally {
+    checkingSubmit.value = false
+  }
 }
 
 const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
@@ -2555,6 +2672,7 @@ const handleMixedChannelCancel = () => {
 watch(
   () => props.show,
   (newShow) => {
+    dialogGeneration++
     if (!newShow) {
       // Reset all enable flags
       enableBaseUrl.value = false
@@ -2575,6 +2693,7 @@ watch(
       enableGroups.value = false
       enableExcelBPS.value = false
       enableOpenAIPassthrough.value = false
+      enableOpenAIPassthroughModelFilter.value = false
       enableOpenAIFlattenNamespaces.value = false
       enableOpenAILongContextBilling.value = false
       enableOpenAIEndpointCapabilities.value = false
@@ -2604,9 +2723,12 @@ watch(
       excelBPSRecoveryIntervalMinutes.value = DEFAULT_BPS_RECOVERY_INTERVAL_MINUTES
       excelBPSOmitUnsupportedTools.value = false
       excelBPSIgnoreEncryptedContent.value = false
+  excelBPSWebSearch.value = false
+  excelBPSWebSearchAuto.value = false
       excelBPSAutoMoveOn403.value = false
       excelBPS403TargetGroupID.value = ''
       openaiPassthroughEnabled.value = false
+      openaiPassthroughModelFilterEnabled.value = false
       openaiFlattenNamespacesEnabled.value = false
       openAILongContextBillingEnabled.value = false
       openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']

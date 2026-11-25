@@ -12,7 +12,7 @@ import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import type { User } from '@/types'
 
 const smartOpsPaths = ['/admin/lottery', '/admin/auto-config', '/admin/priority-scheduling',
-  '/admin/channel-operations', '/admin/profit-operations', '/admin/account-quality', '/admin/controlled-experiments', '/admin/account-ops', '/admin/token-guard', '/admin/token-guard-v2', '/admin/pelican-tests', '/admin/group-cache-tests']
+  '/admin/qqbot/overview', '/admin/channel-config', '/admin/account-quality', '/admin/controlled-experiments', '/admin/token-guard', '/admin/token-guard-v2', '/admin/pelican-tests', '/admin/group-cache-tests']
 
 async function mountAt(path: string) {
   const router = createRouter({
@@ -40,10 +40,10 @@ describe('SmartOpsNav', () => {
     expect(wrapper.find('[aria-current="page"]').text()).toBe('lottery.adminTitle')
   })
 
-  it('ends with the ticket harvest flow and hides request capture while the feature is off', async () => {
-    const wrapper = await mountAt('/admin/harvest-flow')
+  it('keeps credential operations and hides request capture while the feature is off', async () => {
+    const wrapper = await mountAt('/admin/token-guard-v2')
     expect(hrefs(wrapper)).toEqual([...smartOpsPaths, '/admin/ai-ops', '/admin/harvest-flow'])
-    expect(wrapper.find('[aria-current="page"]').text()).toBe('nav.harvestFlow')
+    expect(wrapper.find('[aria-current="page"]').text()).toBe('tokenGuardV2.title')
   })
 
   it('lists request capture before the ticket harvest flow when the feature is on', async () => {
@@ -65,6 +65,7 @@ describe('SmartOpsNav', () => {
     useAuthStore().user = { id: 42, role: 'observer' } as User
     const wrapper = await mountAt('/admin/pelican-tests')
     expect(hrefs(wrapper)).not.toContain('/admin/ai-ops')
+    expect(hrefs(wrapper)).not.toContain('/admin/qqbot/overview')
   })
 
   it('keeps the AI notice in the normal nav flow so dismissing it reserves no space', async () => {
@@ -95,6 +96,13 @@ describe('SmartOpsNav', () => {
     expect(reloaded.find('a[href="/admin/ai-ops"] + [data-testid="new-feature-badge"]').exists()).toBe(false)
     expect(useNewFeatureNoticeStore().isDismissed(41, NEW_FEATURE_NOTICES.protocolFeatureSwitches)).toBe(true)
     reloaded.unmount()
+  })
+
+  it('uses the provider reconciliation notice on the existing profit entry', async () => {
+    const wrapper = await mountAt('/admin/channel-config')
+    await wrapper.get('a[href="/admin/channel-config"] + [data-testid="new-feature-badge"]').trigger('click')
+    expect(useNewFeatureNoticeStore().isDismissed(41, NEW_FEATURE_NOTICES.channelConfig)).toBe(true)
+    wrapper.unmount()
   })
 
   it('shares quality rest dismissal across navigation entries without dismissing other features', async () => {

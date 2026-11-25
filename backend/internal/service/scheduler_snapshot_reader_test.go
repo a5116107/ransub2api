@@ -154,7 +154,7 @@ func TestSchedulerSnapshotReaderChecksLiveEligibilityWithoutMutatingCache(t *tes
 }
 
 func TestSchedulerSnapshotReaderRequiresAllRequestedAccountDetails(t *testing.T) {
-	cache := &snapshotReaderCache{accounts: []*Account{{ID: 1}}}
+	cache := &snapshotReaderCache{accounts: []*Account{{ID: 1, Status: StatusActive, Schedulable: true}}}
 	svc := NewSchedulerSnapshotService(cache, nil, nil, nil, snapshotReaderConfig())
 	defer svc.Stop()
 	accounts, err := svc.GetAccounts(context.Background(), []int64{1, 2})

@@ -68,11 +68,12 @@ func readGeminiCachedContentBody(c *gin.Context) ([]byte, bool) {
 		if middleware.RejectRequestBodyReadError(c, err) {
 			return nil, false
 		}
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			googleError(c, http.StatusRequestEntityTooLarge, buildBodyTooLargeMessage(maxErr.Limit))
-			return nil, false
+		status, message := requestBodyReadFailure(nil, c.Request, err)
+		if status == pkghttputil.StatusClientClosedRequest {
+			c.Status(status)
+		} else {
+			googleError(c, status, message)
 		}
-		googleError(c, http.StatusBadRequest, "Failed to read request body")
 		return nil, false
 	}
 	if len(body) == 0 {
@@ -230,12 +231,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 			accountReleaseFunc()
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			middleware.MarkIngressRejected(c, middleware.IngressRejectLongContextDisabled)
-			code := "context_unverifiable"
-			var policyErr *service.APIKeyLongContextError
-			if errors.As(err, &policyErr) {
-				code = policyErr.Code
-			}
-			googleErrorWithType(c, http.StatusBadRequest, "invalid_request_error", code, err.Error())
+			googleErrorWithType(c, http.StatusBadRequest, "invalid_request_error", service.APIKeyContextLengthExceededCode, service.APIKeyContextLengthExceededMessage)
 			return
 		}
 		usageFields := clientRequestedUsageFields(c, channelMapping, reqModel, mappedModel)
@@ -263,6 +259,10 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		}
 
 		routeFingerprint := service.GeminiCachedContentRouteFingerprint(account)
+		if gateErr := service.CheckUpstreamModeration(c.Request.Context(), c, account); gateErr != nil {
+			accountReleaseFunc()
+			return
+		}
 		upstream, err := svc.CreateUpstream(c.Request.Context(), account, req, mappedModel, publicID, ttl)
 		accountReleaseFunc()
 		if err != nil {
@@ -308,6 +308,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 			Result: &service.ForwardResult{
 				Model: modelName, UpstreamModel: mappedModel,
 				Usage: service.ClaudeUsage{InputTokens: int(tokens)}, CacheStorageTokenHours: storageTokenHours,
+				UpstreamPriceMultiplier: service.VertexUpstreamPriceMultiplier(account, mappedModel, ""),
 			},
 			APIKey: apiKey, User: apiKey.User, Subscription: subscription, PricingAt: pricingAt, ChannelUsageFields: usageFields,
 		})
@@ -757,15 +758,17 @@ func (h *GatewayHandler) submitGeminiCachedContentUsage(
 	if inputTokens <= 0 && storageTokenHours <= 0 {
 		return
 	}
+	priceMultiplier := service.VertexUpstreamPriceMultiplier(account, upstreamModel, "")
 	if upstreamModel == model {
 		upstreamModel = ""
 	}
 	result := &service.ForwardResult{
-		RequestID:              requestID,
-		Model:                  model,
-		UpstreamModel:          upstreamModel,
-		Usage:                  service.ClaudeUsage{InputTokens: inputTokens},
-		CacheStorageTokenHours: storageTokenHours,
+		RequestID:               requestID,
+		Model:                   model,
+		UpstreamModel:           upstreamModel,
+		Usage:                   service.ClaudeUsage{InputTokens: inputTokens},
+		CacheStorageTokenHours:  storageTokenHours,
+		UpstreamPriceMultiplier: priceMultiplier,
 	}
 	inboundEndpoint := GetInboundEndpoint(c)
 	upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)

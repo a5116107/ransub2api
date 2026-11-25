@@ -331,6 +331,14 @@ func TestProvideConcurrencyCacheRegionalKeepsInheritedAPIKeyTTL(t *testing.T) {
 	cfg.Gateway.APIKeySlotTTLSeconds = 120
 	cfg.Runtime.RegionalConcurrencyFile = configPath
 
+	cfg.Gateway.UpstreamKeyConcurrency.Revision = 1
+	raw, digest, err := cfg.Gateway.UpstreamKeyConcurrency.EncodeLimits()
+	require.NoError(t, err)
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO regional_upstream_key_policy").WithArgs(int64(1), digest, string(raw)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT revision,digest FROM regional_upstream_key_policy").WillReturnRows(sqlmock.NewRows([]string{"revision", "digest"}).AddRow(int64(1), digest))
+	mock.ExpectExec("UPDATE regional_upstream_key_policy").WithArgs(int64(1), digest, string(raw)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO regional_runtime_members").
 		WithArgs("epoch-1", "instance-1", "primary").
 		WillReturnResult(sqlmock.NewResult(0, 1))

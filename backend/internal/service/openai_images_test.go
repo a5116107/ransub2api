@@ -1162,7 +1162,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuth429CarriesSameAccountRetryWindow
 	require.WithinDuration(t, startedAt.Add(openAIOAuth429RetryWindow), failoverErr.SameAccountRetryDeadline, time.Second)
 }
 
-func TestOpenAIImagesOAuthBodyReadTransportErrorFailover(t *testing.T) {
+func TestOpenAIImagesOAuthBodyReadPeerResetNeverReplays(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1183,22 +1183,25 @@ func TestOpenAIImagesOAuthBodyReadTransportErrorFailover(t *testing.T) {
 	err := svc.handleOpenAIImagesOAuthResponseError(context.Background(), c, account, "gpt-image-2", "https://api.openai.com/v1/responses", resp, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), readErr)
 
 	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.JSONEq(t, `{"error":{"type":"upstream_error","code":"upstream_http2_stream_error","message":"Upstream HTTP/2 stream failed"}}`, string(failoverErr.ResponseBody))
-	require.Equal(t, "req_h2_read_failure", failoverErr.ResponseHeaders.Get("x-request-id"))
-	require.Equal(t, "preserved", failoverErr.ResponseHeaders.Get("x-upstream"))
-	resp.Header.Set("X-Upstream", "mutated")
-	require.Equal(t, "preserved", failoverErr.ResponseHeaders.Get("x-upstream"))
+	require.NotErrorAs(t, err, &failoverErr, "submitted image requests must not replay after peer reset")
+	code, message, ok := OpenAIUpstreamStreamReadErrorDetails(err)
+	require.True(t, ok)
+	require.Equal(t, OpenAIUpstreamHTTP2StreamErrorCode, code)
+	require.Contains(t, message, "INTERNAL_ERROR")
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), "Do not automatically retry")
+	require.NotContains(t, rec.Body.String(), "req_h2_read_failure")
+	require.NotContains(t, rec.Body.String(), "preserved")
 
 	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok)
 	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
 	require.True(t, ok)
 	require.Len(t, events, 1)
-	require.Equal(t, "failover", events[0].Kind)
+	require.Equal(t, "transport_error", events[0].Kind)
+	require.Zero(t, events[0].UpstreamStatusCode)
 	require.Equal(t, "req_h2_read_failure", events[0].UpstreamRequestID)
-	require.Equal(t, "Upstream HTTP/2 stream failed", events[0].Message)
+	require.Equal(t, message, events[0].Message)
 }
 
 func TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified(t *testing.T) {
@@ -1458,6 +1461,49 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyAccessStateUsesTypedFailover(t 
 	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.Equal(t, "req_images_access_state", failoverErr.ResponseHeaders.Get("x-request-id"))
 	require.False(t, c.Writer.Written())
+}
+
+func TestOpenAIGatewayServiceForwardImages_APIKeyRequestTimeoutReturnsFailoverBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, upstreamBody := range []string{
+		`{"error":{"code":"upstream_unavailable","message":"Upstream request failed","type":"adobe_upstream"}}`,
+		`{"error":{"message":"Model is overloaded, please retry later","type":"rate_limit_error"}}`,
+		`{"error":{"message":"adobe throttled: status 429 retry-after=21.48s envoy=false {\"error_code\":\"rate_limited\",\"message\":\"Too many requests. Please try again later.\"}","type":"rate_limit_error"}}`,
+	} {
+		t.Run(extractUpstreamErrorMessage([]byte(upstreamBody)), func(t *testing.T) {
+			body := []byte(`{"model":"gpt-image-1","prompt":"draw a cat"}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusRequestTimeout,
+				Header: http.Header{
+					"Content-Type": {"application/json"},
+				},
+				Body: io.NopCloser(strings.NewReader(upstreamBody)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			account := &Account{
+				ID: 51, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "sk-test"},
+			}
+
+			result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusRequestTimeout, failoverErr.StatusCode)
+			require.Equal(t, upstreamBody, string(failoverErr.ResponseBody))
+			require.False(t, failoverErr.RetryableOnSameAccount)
+			require.False(t, IsResponseCommitted(c))
+			require.False(t, c.Writer.Written())
+			require.Empty(t, rec.Body.String())
+		})
+	}
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyStreamJSONResponseBillsImage(t *testing.T) {

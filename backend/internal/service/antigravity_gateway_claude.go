@@ -31,6 +31,13 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	defer func() {
 		recordForwardTimingOutcome(ctx, c, forwardResult != nil && forwardResult.ClientDisconnect, forwardErr)
 	}()
+	if account.gatewayProtocolsPending() {
+		return s.forwardGatewayMessages(ctx, c, account, body)
+	}
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
+
 	beginUpstreamResponseModelObservation(c)
 	// 上游透传账号直接转发，不走 OAuth token 刷新
 	if account.Type == AccountTypeUpstream {
@@ -408,7 +415,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				}
 			}
 
-			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
+			s.handleUpstreamErrorAfterRetryLoop(ctx, c, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
 
 			// 精确匹配服务端配置类 400 错误，触发同账号重试 + failover
 			if resp.StatusCode == http.StatusBadRequest {

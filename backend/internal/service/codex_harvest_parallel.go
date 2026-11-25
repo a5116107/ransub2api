@@ -68,7 +68,7 @@ func (s *OpenAIGatewayService) runParallelHarvest(ctx context.Context, req Manua
 		if used.Load() >= int64(req.MaxAttempts) {
 			break
 		}
-		if _, ok := s.manualHarvestLiveModels(account, []string{model})[model]; ok {
+		if _, ok := s.liveCodexTicketModels(account, []string{model})[model]; ok {
 			continue
 		}
 		round, cancel := context.WithCancel(ctx)

@@ -140,10 +140,16 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 			)
 		}
 
+		if openAIWSModelFailureStatus(account, message) != 0 {
+			model, _ := payload["model"].(string)
+			s.handleOpenAIWSModelFailure(ctx, account, model, message)
+			lease.MarkBroken()
+			return &openAIWSModelRejectionError{payload: append([]byte(nil), message...)}
+		}
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
 			prewarmModel, _ := reqBody["model"].(string)
-			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, prewarmModel)
+			s.persistOpenAIWSRateLimitSignal(openAI429LeaseObservation(ctx, lease), account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, prewarmModel)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "OpenAI websocket prewarm error"
@@ -236,7 +242,7 @@ func normalizeOpenAIWSTerminalEvent(eventType string) string {
 // markOpenAIWSClientVisibleFailure records only terminal/error protocol events
 // that were delivered to the client. Callers invoke it only after any hidden
 // failover/recovery decision and a successful downstream write.
-func markOpenAIWSClientVisibleFailure(c *gin.Context, eventType string, payload []byte) {
+func markOpenAIWSClientVisibleFailure(c *gin.Context, eventType string, payload []byte, upstream ...*OpsUpstreamWSFailure) {
 	eventType = strings.TrimSpace(eventType)
 	if eventType != "error" && eventType != "response.failed" {
 		return
@@ -273,7 +279,14 @@ func markOpenAIWSClientVisibleFailure(c *gin.Context, eventType string, payload 
 	if message == "" {
 		message = "upstream websocket request failed"
 	}
-	MarkOpsStreamFailure(c, errType, code, message, status)
+	var origin *OpsUpstreamWSFailure
+	if len(upstream) > 0 {
+		origin = upstream[0]
+	}
+	MarkOpsStreamErrorValue(c, OpsStreamError{
+		ErrType: errType, Code: code, Message: message, IntendedStatus: status,
+		CountTowardsSLA: true, UpstreamWSFailure: origin,
+	})
 }
 
 func openAIWSPayloadTransientStatus(payload []byte) int {
@@ -319,6 +332,38 @@ func openAIWSPayloadTransientStatus(payload []byte) int {
 	}
 }
 
+// openAIWSForwardStreamPhaseContext stamps the temp-unsched phase for a websocket
+// event. Before any client output, the default pre-stream phase still lets every
+// rule match. After output has started, legacy mid-stream statuses keep their
+// historical behavior and generic 500/502 failures require an explicit after_stream rule.
+func openAIWSForwardStreamPhaseContext(ctx context.Context, outputStarted bool, payload []byte) context.Context {
+	if !outputStarted {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return withTempUnschedStreamPhase(ctx, openAIWSOutputStartedStreamPhase(payload))
+}
+
+func openAIWSOutputStartedStreamPhase(payload []byte) tempUnschedStreamPhase {
+	message := extractOpenAISSEErrorMessage(payload)
+	switch openAIStreamFailureStatus(payload, message) {
+	case http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusServiceUnavailable, 529:
+		return tempUnschedPhaseMidStreamLegacy
+	case http.StatusForbidden:
+		if openAIStream403AccountFailure(payload, message) {
+			return tempUnschedPhaseMidStreamLegacy
+		}
+	}
+	switch openAIWSPayloadTransientStatus(payload) {
+	case http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusServiceUnavailable, 529:
+		return tempUnschedPhaseMidStreamLegacy
+	default:
+		return tempUnschedPhaseMidStreamOptIn
+	}
+}
+
 func (s *OpenAIGatewayService) handleOpenAIWSTerminalTransientFailure(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) string {
 	eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 	terminalEvent := normalizeOpenAIWSTerminalEvent(eventType)
@@ -329,19 +374,26 @@ func (s *OpenAIGatewayService) handleOpenAIWSTerminalTransientFailure(ctx contex
 	return terminalEvent
 }
 
-func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) {
+// The result reports a handled model rejection; other account side effects do
+// not authorize the new model-failure replay path.
+func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) bool {
 	eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 	if eventType != "error" {
-		return
+		return false
+	}
+	if openAIWSModelFailureStatus(account, payload) != 0 {
+		return s.handleOpenAIWSModelFailure(ctx, account, canonicalModel, payload)
 	}
 	s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, extractOpenAISSEErrorMessage(payload)))
 	status := openAIWSPayloadTransientStatus(payload)
 	if status != 0 {
 		if status == http.StatusTooManyRequests {
+			ctx = context.WithValue(ctx, openAI429WeeklyHeadersKey{}, headers)
 			headers = openAIWSSemantic429Headers(account, canonicalModel, headers)
 		}
 		s.handleOpenAIAccountUpstreamError(ctx, account, status, headers, payload, canonicalModel)
 	}
+	return false
 }
 
 // handleOpenAIWSFailureAccountSideEffects applies both structured credential
@@ -350,16 +402,19 @@ func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx cont
 func (s *OpenAIGatewayService) handleOpenAIWSFailureAccountSideEffects(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) bool {
 	message := extractOpenAISSEErrorMessage(payload)
 	status := openAIStreamFailureStatus(payload, message)
+	if openAIWSModelFailureStatus(account, payload) != 0 {
+		return s.handleOpenAIWSModelFailure(ctx, account, canonicalModel, payload)
+	}
 	s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailedEventSemanticStatus(payload, message))
 	switch status {
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
+		s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, account, payload, message, headers, canonicalModel)
 		return true
 	case http.StatusForbidden:
 		if !openAIStream403AccountFailure(payload, message) {
 			return false
 		}
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
+		s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, account, payload, message, headers, canonicalModel)
 		return true
 	}
 
@@ -572,7 +627,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	}
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
-	if err != nil || account == nil {
+	if err != nil {
+		return 0, nil, "", nil
+	}
+	if account == nil {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}
@@ -610,9 +668,21 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if vetoed, _ := openAIProfitControlVetoReason(ctx, account); vetoed {
 		return 0, nil, "", nil
 	}
-	if s.schedulerSnapshot != nil && s.accountRepo != nil {
-		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
-		if latestErr != nil || latest == nil {
+	if s.schedulerSnapshot != nil && (s.accountRepo != nil || s.schedulerSnapshot.localSnapshotReader != nil) {
+		var latest *Account
+		var latestErr error
+		switch {
+		case account.gatewayProtocolSource != nil:
+			latest, latestErr = s.openAIGatewaySelectionView(ctx, account)
+		case s.schedulerSnapshot.localSnapshotReader != nil:
+			latest, latestErr = s.schedulerSnapshot.GetAccount(ctx, account.ID)
+		default:
+			latest, latestErr = s.accountRepo.GetByID(ctx, account.ID)
+		}
+		if latestErr != nil {
+			return 0, nil, "", nil
+		}
+		if latest == nil {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
@@ -721,7 +791,10 @@ func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Contex
 	// 非空 responseBody 表示已建立连接后收到的语义错误事件；握手响应头
 	// 可能只是成功连接时的全局快照，不能用于普通模型的 429 账号级限流。
 	// 实际拨号 HTTP 429 使用 nil responseBody，必须保留响应头。
+	// 保留调用方从真实输出状态传入的 stream phase；有事件体并不代表已输出
+	// （例如 prewarm），不能在此把所有语义 429 一律视为流前或流中。
 	if len(responseBody) > 0 {
+		ctx = context.WithValue(ctx, openAI429WeeklyHeadersKey{}, headers)
 		headers = openAIWSSemantic429Headers(account, model, headers)
 	}
 	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody, model)
@@ -803,6 +876,8 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 	code := strings.ToLower(strings.TrimSpace(codeRaw))
 	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
 	switch {
+	case code == "encrypted_agent_recovery_owner_unavailable":
+		return http.StatusConflict
 	case strings.Contains(errType, "invalid_request"),
 		strings.Contains(code, "invalid_request"),
 		strings.Contains(code, "bad_request"),

@@ -174,7 +174,7 @@ func TestAnthropicCompatStreaming_IdleUpstreamEndsWithinInterval(t *testing.T) {
 				got := runCompatStreamWithDeadline(t, handle, newCompatStreamIdleTestService(1), resp, c)
 
 				if disconnect {
-					require.NoError(t, got.err)
+					require.Error(t, got.err)
 				} else {
 					require.ErrorIs(t, got.err, errAnthropicNativeStreamIdle)
 					body := writer.Body.String()
@@ -196,7 +196,7 @@ func TestAnthropicCompatStreaming_IdleUpstreamEndsWithinInterval(t *testing.T) {
 	}
 }
 
-func TestAnthropicCompatStreaming_IdleAfterTerminalEventCompletes(t *testing.T) {
+func TestAnthropicCompatStreaming_IdleAfterTerminalDoesNotOverrideReadFailure(t *testing.T) {
 	for name, handle := range compatStreamHandlers() {
 		for streamName, stream := range map[string]string{
 			"message_stop": anthropicStreamWithMidStreamText(),
@@ -210,11 +210,11 @@ func TestAnthropicCompatStreaming_IdleAfterTerminalEventCompletes(t *testing.T) 
 
 				got := runCompatStreamWithDeadline(t, handle, newCompatStreamIdleTestService(1), resp, c)
 
-				require.NoError(t, got.err)
+				require.Error(t, got.err)
 				require.NotNil(t, got.result)
 				require.Equal(t, 42, got.result.Usage.OutputTokens)
-				require.Contains(t, rec.Body.String(), compatStreamTerminalMarkers[name])
-				require.NotContains(t, rec.Body.String(), compatStreamFailureMarkers[name])
+				require.NotContains(t, rec.Body.String(), compatStreamTerminalMarkers[name])
+				require.Contains(t, rec.Body.String(), compatStreamFailureMarkers[name])
 			})
 		}
 	}
@@ -249,8 +249,8 @@ func TestAnthropicCompatStreaming_ReadErrorBeforeTerminalEventFails(t *testing.T
 			{name: "after_text", stream: anthropicStreamTruncatedBeforeMessageDelta(), wantErr: true, wantResult: true},
 			{name: "after_message_start", stream: messageStartOnly, wantErr: true, wantResult: true},
 			{name: "before_any_event", stream: "", wantErr: true},
-			{name: "after_stop_reason", stream: anthropicStreamWithoutMessageStop(), wantResult: true},
-			{name: "after_message_stop_without_stop_reason", stream: strings.Replace(anthropicStreamWithMidStreamText(), `"delta":{"stop_reason":"end_turn"}`, `"delta":{}`, 1), wantResult: true},
+			{name: "after_stop_reason", stream: anthropicStreamWithoutMessageStop(), wantErr: true, wantResult: true},
+			{name: "after_message_stop_without_stop_reason", stream: strings.Replace(anthropicStreamWithMidStreamText(), `"delta":{"stop_reason":"end_turn"}`, `"delta":{}`, 1), wantErr: true, wantResult: true},
 		} {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
 				gin.SetMode(gin.TestMode)
@@ -367,7 +367,7 @@ func TestAnthropicCompatStreaming_EOFBeforeMessageStartFails(t *testing.T) {
 	}
 }
 
-func TestAnthropicCompatStreaming_DoneLineCountsAsTerminalEvent(t *testing.T) {
+func TestAnthropicCompatStreaming_DoneLineIsNotAnthropicTerminal(t *testing.T) {
 	for name, handle := range compatStreamHandlers() {
 		t.Run(name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
@@ -377,9 +377,9 @@ func TestAnthropicCompatStreaming_DoneLineCountsAsTerminalEvent(t *testing.T) {
 
 			result, err := handle(&GatewayService{}, &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stream))}, c)
 
-			require.NoError(t, err)
+			require.Error(t, err)
 			require.NotNil(t, result)
-			require.NotContains(t, rec.Body.String(), compatStreamFailureMarkers[name])
+			require.Contains(t, rec.Body.String(), compatStreamFailureMarkers[name])
 		})
 	}
 }
@@ -417,7 +417,7 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventEndsStreamWithoutWaiting(t *
 				got := runCompatStreamWithDeadline(t, handle, newCompatStreamIdleTestService(0), resp, c)
 
 				if disconnect {
-					require.NoError(t, got.err)
+					require.Error(t, got.err)
 					require.NotNil(t, got.result)
 					require.True(t, got.result.ClientDisconnect)
 					require.Equal(t, 20, got.result.Usage.InputTokens)
@@ -425,7 +425,7 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventEndsStreamWithoutWaiting(t *
 				} else {
 					var sseErr *sseStreamErrorEventError
 					require.ErrorAs(t, got.err, &sseErr)
-					require.Nil(t, got.result, "an upstream error event is not billed while the client is online")
+					require.NotNil(t, got.result, "preserve known usage on upstream error")
 					require.Equal(t, 1, strings.Count(writer.Body.String(), compatStreamFailureMarkers[name]))
 					require.Contains(t, writer.Body.String(), "Overloaded")
 				}
@@ -458,7 +458,7 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventStopsReadingBufferedEvents(t
 
 			var sseErr *sseStreamErrorEventError
 			require.ErrorAs(t, err, &sseErr)
-			require.Nil(t, result)
+			require.NotNil(t, result)
 			body := rec.Body.String()
 			require.NotContains(t, body, "LEAKED")
 			require.NotContains(t, body, compatStreamTerminalMarkers[name])
@@ -542,6 +542,13 @@ func TestForwardAsCompatStreaming_UpstreamErrorEventFailsOver(t *testing.T) {
 				}
 
 				var failoverErr *UpstreamFailoverError
+				if tc.name == "after_output" {
+					require.Error(t, err)
+					require.False(t, errors.As(err, &failoverErr))
+					require.NotNil(t, result)
+					require.Equal(t, 20, result.Usage.InputTokens)
+					return
+				}
 				require.ErrorAs(t, err, &failoverErr)
 				require.Equal(t, tc.wantStatus, failoverErr.StatusCode)
 				require.Nil(t, result)
@@ -621,7 +628,7 @@ func TestAnthropicCompatStream_ClientGoneAtStreamEndMarksDisconnected(t *testing
 
 		require.False(t, ok)
 		require.True(t, stream.clientDisconnected, "round %d", round)
-		require.Nil(t, stream.failure())
+		require.NotNil(t, stream.failure())
 		stream.stop()
 	}
 }
@@ -650,7 +657,7 @@ func TestAnthropicCompatStreaming_RequestContextCanceledDrainsWithoutWriting(t *
 
 				got := runCompatStreamWithDeadline(t, handle, newCompatStreamIdleTestService(0), &http.Response{Header: http.Header{}, Body: body}, c)
 
-				require.NoError(t, got.err)
+				require.Error(t, got.err)
 				require.NotNil(t, got.result)
 				require.True(t, got.result.ClientDisconnect)
 				require.Equal(t, 20, got.result.Usage.InputTokens)
@@ -703,7 +710,7 @@ func TestAnthropicCompatStreaming_DisconnectDrainEndsWhenIntervalDisabled(t *tes
 
 			got := runCompatStreamWithDeadline(t, handle, newCompatStreamIdleTestService(0), resp, c)
 
-			require.NoError(t, got.err)
+			require.Error(t, got.err)
 			require.NotNil(t, got.result)
 			require.True(t, got.result.ClientDisconnect)
 			require.Equal(t, 20, got.result.Usage.InputTokens)
@@ -726,8 +733,8 @@ func TestForwardAsCompatStreaming_IdleTimeoutTriggersStreamTimeoutHandling(t *te
 		}{
 			{name: "client_online", stream: anthropicStreamTruncatedBeforeMessageDelta(), marker: "\x00never-written", wantErr: true, wantOutput: 1, wantPenalty: 1},
 			{name: "client_disconnected", stream: anthropicStreamTruncatedBeforeMessageDelta(), marker: "second", wantOutput: 1},
-			{name: "after_message_stop", stream: anthropicStreamWithMidStreamText(), marker: "\x00never-written", wantOutput: 42},
-			{name: "after_stop_reason", stream: anthropicStreamWithoutMessageStop(), marker: "\x00never-written", wantOutput: 42},
+			{name: "after_message_stop", stream: anthropicStreamWithMidStreamText(), marker: "\x00never-written", wantErr: true, wantOutput: 42, wantPenalty: 1},
+			{name: "after_stop_reason", stream: anthropicStreamWithoutMessageStop(), marker: "\x00never-written", wantErr: true, wantOutput: 42, wantPenalty: 1},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				gin.SetMode(gin.TestMode)
@@ -766,7 +773,7 @@ func TestForwardAsCompatStreaming_IdleTimeoutTriggersStreamTimeoutHandling(t *te
 				if tc.wantErr {
 					require.ErrorIs(t, err, errAnthropicNativeStreamIdle)
 				} else {
-					require.NoError(t, err)
+					require.ErrorIs(t, err, context.Canceled)
 				}
 				require.NotNil(t, result)
 				require.Equal(t, tc.wantOutput, result.Usage.OutputTokens)
@@ -785,7 +792,7 @@ func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainsUpstreamUsage(t *t
 		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))},
 		c, nil, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(),
 	)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, context.Canceled)
 	require.NotNil(t, result)
 	require.True(t, writer.failed)
 	require.True(t, result.ClientDisconnect)
@@ -813,7 +820,7 @@ func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsUpstreamUsage(t 
 		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))},
 		c, nil, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), apicompat.ResponsesClientToolMapping{},
 	)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, context.Canceled)
 	require.NotNil(t, result)
 	require.True(t, writer.failed)
 	require.True(t, result.ClientDisconnect)

@@ -367,10 +367,12 @@ type UpdateSettingsRequest struct {
 	ChannelMonitorHideUserRanking        *bool   `json:"channel_monitor_hide_user_ranking"`
 
 	// Grok model mapping policy
-	GrokDefaultTextModel           *string `json:"grok_default_text_model"`
-	GrokCrossClientModelMapEnabled *bool   `json:"grok_cross_client_model_map_enabled"`
-	GrokDefaultBaseURLMode         *string `json:"grok_default_base_url_mode"`
-	GrokVideoSourceURLEnabled      *bool   `json:"grok_video_source_url_enabled"`
+	GrokDefaultTextModel                 *string `json:"grok_default_text_model"`
+	GrokCrossClientModelMapEnabled       *bool   `json:"grok_cross_client_model_map_enabled"`
+	GrokDefaultBaseURLMode               *string `json:"grok_default_base_url_mode"`
+	GrokVideoSourceURLEnabled            *bool   `json:"grok_video_source_url_enabled"`
+	OpenAI409OmitEncryptedHistoryEnabled *bool   `json:"openai_409_omit_encrypted_history_enabled"`
+	OpenAI400OmitEncryptedHistoryEnabled *bool   `json:"openai_400_omit_encrypted_history_enabled"`
 
 	// Available Channels feature switch (user-facing)
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
@@ -383,9 +385,11 @@ type UpdateSettingsRequest struct {
 	SubscriptionEnabled *bool `json:"subscription_enabled"`
 
 	// Model Plaza feature switches + description
-	ModelPlazaEnabled     *bool   `json:"model_plaza_enabled"`
-	ModelPlazaRequireAuth *bool   `json:"model_plaza_require_auth"`
-	ModelPlazaDescription *string `json:"model_plaza_description"`
+	ModelPlazaEnabled      *bool                               `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth  *bool                               `json:"model_plaza_require_auth"`
+	ModelPlazaDescription  *string                             `json:"model_plaza_description"`
+	ModelPlazaUSDToCNYRate *float64                            `json:"model_plaza_usd_to_cny_rate" binding:"omitempty,gt=0"`
+	ModelPlazaCurrency     *service.ModelPlazaCurrencySettings `json:"model_plaza_currency"`
 
 	// Plugin management menu visibility switch; plugin runtime is unaffected.
 	PluginManagementEnabled *bool `json:"plugin_management_enabled"`
@@ -2353,6 +2357,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.GrokVideoSourceURLEnabled
 		}(),
+		OpenAI409OmitEncryptedHistoryEnabled: func() bool {
+			if req.OpenAI409OmitEncryptedHistoryEnabled != nil {
+				return *req.OpenAI409OmitEncryptedHistoryEnabled
+			}
+			return previousSettings.OpenAI409OmitEncryptedHistoryEnabled
+		}(),
+		OpenAI400OmitEncryptedHistoryEnabled: func() bool {
+			if req.OpenAI400OmitEncryptedHistoryEnabled != nil {
+				return *req.OpenAI400OmitEncryptedHistoryEnabled
+			}
+			return previousSettings.OpenAI400OmitEncryptedHistoryEnabled
+		}(),
 		AvailableChannelsEnabled: func() bool {
 			if req.AvailableChannelsEnabled != nil {
 				return *req.AvailableChannelsEnabled
@@ -2388,6 +2404,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.ModelPlazaRequireAuth
 			}
 			return previousSettings.ModelPlazaRequireAuth
+		}(),
+		ModelPlazaCurrency: func() service.ModelPlazaCurrencySettings {
+			if req.ModelPlazaCurrency != nil {
+				return *req.ModelPlazaCurrency
+			}
+			return previousSettings.ModelPlazaCurrency
+		}(),
+		ModelPlazaUSDToCNYRate: func() float64 {
+			if req.ModelPlazaUSDToCNYRate != nil {
+				return *req.ModelPlazaUSDToCNYRate
+			}
+			return previousSettings.ModelPlazaUSDToCNYRate
 		}(),
 		ModelPlazaDescription: func() string {
 			if req.ModelPlazaDescription != nil {
@@ -2870,10 +2898,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ChannelMonitorShowQuota:              updatedSettings.ChannelMonitorShowQuota,
 		ChannelMonitorHideUserRanking:        updatedSettings.ChannelMonitorHideUserRanking,
 
-		GrokDefaultTextModel:           updatedSettings.GrokDefaultTextModel,
-		GrokCrossClientModelMapEnabled: updatedSettings.GrokCrossClientModelMapEnabled,
-		GrokDefaultBaseURLMode:         updatedSettings.GrokDefaultBaseURLMode,
-		GrokVideoSourceURLEnabled:      updatedSettings.GrokVideoSourceURLEnabled,
+		GrokDefaultTextModel:                 updatedSettings.GrokDefaultTextModel,
+		GrokCrossClientModelMapEnabled:       updatedSettings.GrokCrossClientModelMapEnabled,
+		GrokDefaultBaseURLMode:               updatedSettings.GrokDefaultBaseURLMode,
+		GrokVideoSourceURLEnabled:            updatedSettings.GrokVideoSourceURLEnabled,
+		OpenAI409OmitEncryptedHistoryEnabled: updatedSettings.OpenAI409OmitEncryptedHistoryEnabled,
+		OpenAI400OmitEncryptedHistoryEnabled: updatedSettings.OpenAI400OmitEncryptedHistoryEnabled,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 		PelicanShowcaseEnabled:   updatedSettings.PelicanShowcaseEnabled,
@@ -2883,6 +2913,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ModelPlazaEnabled:       updatedSettings.ModelPlazaEnabled,
 		ModelPlazaRequireAuth:   updatedSettings.ModelPlazaRequireAuth,
 		ModelPlazaDescription:   updatedSettings.ModelPlazaDescription,
+		ModelPlazaUSDToCNYRate:  updatedSettings.ModelPlazaUSDToCNYRate,
+		ModelPlazaCurrency:      updatedSettings.ModelPlazaCurrency,
 		PluginManagementEnabled: updatedSettings.PluginManagementEnabled,
 
 		SupportTicketEnabled: updatedSettings.SupportTicketEnabled,

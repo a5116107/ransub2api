@@ -217,10 +217,12 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// Grok compatibility defaults: cross-client mapping stays enabled unless
 		// operators explicitly disable it.
-		SettingKeyGrokDefaultTextModel:           "grok-4.6",
-		SettingKeyGrokCrossClientModelMapEnabled: "true",
-		SettingKeyGrokDefaultBaseURLMode:         GrokDefaultBaseURLModeCLI,
-		SettingKeyGrokVideoSourceURLEnabled:      "false",
+		SettingKeyGrokDefaultTextModel:                 "grok-4.6",
+		SettingKeyGrokCrossClientModelMapEnabled:       "true",
+		SettingKeyGrokDefaultBaseURLMode:               GrokDefaultBaseURLModeCLI,
+		SettingKeyGrokVideoSourceURLEnabled:            "false",
+		SettingKeyOpenAI409OmitEncryptedHistoryEnabled: "false",
+		SettingKeyOpenAI400OmitEncryptedHistoryEnabled: "false",
 
 		// Available channels feature (default disabled; opt-in)
 		SettingKeyAvailableChannelsEnabled: "false",
@@ -235,6 +237,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyModelPlazaEnabled:       "false",
 		SettingKeyModelPlazaRequireAuth:   "false",
 		SettingKeyModelPlazaDescription:   "",
+		SettingKeyModelPlazaUSDToCNYRate:  strconv.FormatFloat(defaultModelPlazaUSDToCNYRate, 'f', -1, 64),
 		SettingKeyPluginManagementEnabled: "false",
 
 		// Support tickets (default disabled; opt-in). A missing config means the defaults.
@@ -889,6 +892,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GrokCrossClientModelMapEnabled = !isFalseSettingValue(settings[SettingKeyGrokCrossClientModelMapEnabled])
 	result.GrokDefaultBaseURLMode = normalizeGrokDefaultBaseURLMode(settings[SettingKeyGrokDefaultBaseURLMode])
 	result.GrokVideoSourceURLEnabled = settings[SettingKeyGrokVideoSourceURLEnabled] == "true"
+	result.OpenAI409OmitEncryptedHistoryEnabled = settings[SettingKeyOpenAI409OmitEncryptedHistoryEnabled] == "true"
+	result.OpenAI400OmitEncryptedHistoryEnabled = settings[SettingKeyOpenAI400OmitEncryptedHistoryEnabled] == "true"
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"
@@ -908,6 +913,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.ModelPlazaEnabled = settings[SettingKeyModelPlazaEnabled] == "true"
 	result.ModelPlazaRequireAuth = settings[SettingKeyModelPlazaRequireAuth] == "true"
 	result.ModelPlazaDescription = settings[SettingKeyModelPlazaDescription]
+	result.ModelPlazaUSDToCNYRate = modelPlazaUSDToCNYRate(settings[SettingKeyModelPlazaUSDToCNYRate])
+	result.ModelPlazaCurrency = parseModelPlazaCurrency(settings[SettingKeyModelPlazaCurrency])
 	result.PluginManagementEnabled = settings[SettingKeyPluginManagementEnabled] == "true"
 
 	// Support tickets (default: disabled; strict true). A corrupt config is shown as the

@@ -89,7 +89,7 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 						c, _ := gin.CreateTestContext(httptest.NewRecorder())
 						c.Request = r
 						user, key, group := userID.Load(), keyID.Load(), groupID.Load()
-						c.Set("api_key", &APIKey{ID: key, UserID: user, GroupID: &group})
+						c.Set("api_key", &APIKey{ID: key, UserID: user, GroupID: &group, AllowLongContext: true})
 						SetOpenAIResponseOwner(c, user, key, gjson.GetBytes(first, "previous_response_id").String())
 						err = svc.ProxyResponsesWebSocketFromClient(ctx, c, conn, account, "creation-fixture", first, nil)
 					}
@@ -118,9 +118,13 @@ func TestWSResponseOwnerNativeIngress(t *testing.T) {
 				}
 				write(client, "gpt-5.1", "", previous)
 				_, first, readErr := client.Read(ctx)
-				if change == "unknown" {
+				if change == "unknown" || change == "identical_model" {
 					require.Error(t, readErr, "unobserved continuation must not reach a provider")
-					require.True(t, IsOpenAITurnAdmissionError(<-results))
+					if change == "unknown" {
+						require.True(t, IsOpenAITurnAdmissionError(<-results))
+					} else {
+						require.Error(t, <-results, "duplicate model fields must be rejected before routing")
+					}
 					require.Empty(t, observations)
 					return
 				}
