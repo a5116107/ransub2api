@@ -152,7 +152,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	db, client := newBillingAuditDatabase(t)
 	const enabledAccounts = 100
 	var phase atomic.Int32
-	var calls [enabledAccounts + 4][6]atomic.Int64
+	var calls [enabledAccounts + 4][7]atomic.Int64
 	var active, maximum, unexpected atomic.Int64
 	var overlapStarted atomic.Int64
 	overlap := make(chan struct{})
@@ -203,6 +203,16 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 					body = `{"success":true,"group_ratio":{"vip":0,"other":null}}`
 				}
 			}
+		case "GET /api/user/self/groups":
+			step, body = 6, `{"success":true,"data":{"vip":{"ratio":0.03}}}`
+			if index == 0 {
+				switch phase.Load() {
+				case 3:
+					body = `{"success":true,"data":{"vip":{"ratio":null},"other":{"ratio":0.01}}}`
+				case 4:
+					body = `{"success":true,"data":{"vip":{"ratio":0},"other":{"ratio":null}}}`
+				}
+			}
 		case "GET /api/token/":
 			switch r.URL.Query().Get("p") {
 			case "0":
@@ -227,7 +237,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 					return
 				}
 			} else {
-				// Three successful requests consume 21 seconds. The inventory
+				// Three successful requests consume 21 seconds. The personal-groups
 				// request must end at the shared 30-second network deadline,
 				// before its own 10-second per-request budget expires.
 				<-r.Context().Done()
@@ -361,12 +371,12 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	for i := 20; i < enabledAccounts; i++ {
 		require.Equal(t, service.UpstreamBillingProbeStatusOK, read(i).Status, "waiting lines must not prevent independent lines from being probed")
 	}
-	var before [len(calls)][6]int64
+	var before [len(calls)][7]int64
 	var physicalCalls int64
 	for i := range calls {
 		for step := range calls[i] {
 			want := int64(2)
-			if (i < 10 && step > 2) || (i >= 10 && i < 20 && step > 4) {
+			if (i < 10 && step > 2) || (i >= 10 && i < 20 && step > 4 && step != 6) {
 				want = 1
 			}
 			if i >= enabledAccounts {
@@ -377,7 +387,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 			require.Equal(t, want, before[i][step], "line %d step %d must stop at its wait response", i, step)
 		}
 	}
-	require.Equal(t, int64(1160), physicalCalls, "count management HTTP calls, not just logical probes")
+	require.Equal(t, int64(1350), physicalCalls, "count management HTTP calls, not just logical probes")
 	run(t)
 	for i := range calls {
 		for step := range calls[i] {
@@ -413,7 +423,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 			physicalCalls += actual
 		}
 	}
-	require.Equal(t, int64(1280), physicalCalls)
+	require.Equal(t, int64(1490), physicalCalls)
 	summary, err := budget.Summary(ctx)
 	require.NoError(t, err)
 	require.Equal(t, physicalCalls, summary.DayUsed, "each management page and raw-key proof is charged across reconstructed runners")
@@ -421,7 +431,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 	require.Greater(t, maximum.Load(), int64(1), "exercise concurrent physical requests")
 	require.LessOrEqual(t, maximum.Load(), int64(4), "management pagination and key verification share the existing probe slots")
 	require.Zero(t, unexpected.Load())
-	t.Logf("100 authorized bindings: five bounded cycles per scan, 1160 HTTP calls before recovery, %d total, max concurrency %d; disabled/OAuth/future bindings untouched", physicalCalls, maximum.Load())
+	t.Logf("100 authorized bindings: five bounded cycles per scan, 1350 HTTP calls before recovery, %d total, max concurrency %d; disabled/OAuth/future bindings untouched", physicalCalls, maximum.Load())
 	for _, tc := range []struct {
 		name  string
 		phase int32
@@ -473,7 +483,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		})
 	}
 	t.Run("exhausted_network_deadline_persists_and_recovers", func(t *testing.T) {
-		var beforeTimeout [len(calls)][6]int64
+		var beforeTimeout [len(calls)][7]int64
 		for i := range calls {
 			for step := range calls[i] {
 				beforeTimeout[i][step] = calls[i][step].Load()
@@ -502,7 +512,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 		for i := range calls {
 			for step := range calls[i] {
 				want := beforeTimeout[i][step]
-				if i == 0 && step < 4 {
+				if i == 0 && (step < 3 || step == 6) {
 					want++
 				}
 				require.Equal(t, want, calls[i][step].Load(), "expired network budget must stop pagination and persist backoff")
@@ -522,7 +532,7 @@ func TestNewAPIIntegrationProbeWaitPersistsAcrossRunners(t *testing.T) {
 				want := beforeTimeout[i][step]
 				if i == 0 {
 					want++
-					if step < 4 {
+					if step < 3 || step == 6 {
 						want++
 					}
 				}

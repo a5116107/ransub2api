@@ -58,6 +58,7 @@ func (newAPIEncryptorFake) Decrypt(s string) (string, error) {
 func newAPIConfigFixture() (*UpstreamBillingProbeService, *newAPIAuthRepoFake, *newAPIHTTP, *newAPIAccounts) {
 	accounts := &newAPIAccounts{&upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{1: {ID: 1, Name: "first", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com/v1", "api_key": "sk-abcd123456789wxyz"}}, 2: {ID: 2, Name: "peer", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com", "api_key": "sk-nope123456789xxxx"}}, 3: {ID: 3, Name: "foreign", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://example.com/tenant", "api_key": "sk-abcd123456789wxyz"}}}}}
 	h := &newAPIHTTP{bodies: map[string]string{"GET /api/status": `{"success":true,"data":{"quota_per_unit":500000}}`, "GET /api/user/self": `{"success":true,"data":{"id":7,"quota":1250000}}`, "GET /api/pricing": `{"success":true,"group_ratio":{"vip":0.5}}`, "GET /api/token/?p=0&page_size=100": `{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":"vip","name":"mine"}],"total":1,"page":1,"page_size":100}}`}}
+	h.bodies["GET /api/user/self/groups"] = `{"success":true,"data":{"vip":{"ratio":0.5}}}`
 	h.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
 	h.bodies["POST /api/token/4/key"] = `{"success":true,"data":{"key":"sk-nope123456789xxxx"}}`
 	s := newUpstreamBillingProbeTestService(accounts, h, nil)
@@ -487,6 +488,15 @@ func TestNewAPIPreviewAndProbeUseSameFixedGroupRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, repo, upstream, accounts := newAPIConfigFixture()
 			upstream.bodies["GET /api/pricing"] = fmt.Sprintf(`{"success":true,"group_ratio":%s}`, tc.pricing)
+			var ratios map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal([]byte(tc.pricing), &ratios))
+			groups := make(map[string]map[string]json.RawMessage)
+			for group, ratio := range ratios {
+				groups[group] = map[string]json.RawMessage{"ratio": ratio}
+			}
+			groupBody, err := json.Marshal(map[string]any{"success": true, "data": groups})
+			require.NoError(t, err)
+			upstream.bodies["GET /api/user/self/groups"] = string(groupBody)
 			upstream.bodies["POST /api/token/3/key"] = `{"success":true,"data":{"key":"sk-abcd123456789wxyz"}}`
 			upstream.bodies["GET /api/token/?p=0&page_size=100"] = fmt.Sprintf(`{"success":true,"data":{"items":[{"id":3,"key":"abcd**********wxyz","group":%q,"route_groups":%s,"cross_group_retry":%t}],"total":1,"page":1,"page_size":100}}`, tc.group, tc.routes, tc.cross)
 			preview, err := s.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1}})
@@ -608,7 +618,7 @@ func (r *newAPIAuthRepoFake) WriteSnapshot(ctx context.Context, a *Account, _ *N
 }
 
 func TestNewAPIProbeHonorsRetryAfterAndRecovers(t *testing.T) {
-	for _, stage := range []string{"GET /api/status", "GET /api/user/self", "GET /api/pricing", "GET /api/token/?p=0&page_size=100", "POST /api/token/3/key"} {
+	for _, stage := range []string{"GET /api/status", "GET /api/user/self", "GET /api/pricing", "GET /api/user/self/groups", "GET /api/token/?p=0&page_size=100", "POST /api/token/3/key"} {
 		for _, code := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 			t.Run(fmt.Sprintf("%s/%d", stage, code), func(t *testing.T) {
 				s, repo, upstream, accounts := newAPIConfigFixture()
@@ -771,7 +781,7 @@ func TestNewAPIPreviewStopsOnKeyVerificationWait(t *testing.T) {
 				}
 				require.ErrorIs(t, err, newAPIError("http_error"))
 				require.NotContains(t, err.Error(), "fixture-secret")
-				require.Len(t, requests, 5, "the next selected account must not send requests after a wait")
+				require.Len(t, requests, 6, "the next selected account must not send requests after a wait")
 				require.Equal(t, "POST /api/token/3/key", requests[len(requests)-1])
 				require.Zero(t, repo.saves)
 				require.Empty(t, repo.bindings)

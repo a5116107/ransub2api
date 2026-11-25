@@ -365,11 +365,11 @@ func TestNewAPIMonitoringBudgetPricingDenialStopsInventoryWithoutFailure(t *test
 func TestNewAPIMonitoringBudgetPreviewStopsOnKeyProofDenial(t *testing.T) {
 	svc, auth, upstream, _ := newAPIConfigFixture()
 	denial := &MonitoringProbeBudgetDenial{Reason: "request_limit", Scope: "global_minute", RetryAt: time.Now().Add(time.Minute)}
-	budget := &monitoringBudgetRepoStub{denyAt: 5, err: denial}
+	budget := &monitoringBudgetRepoStub{denyAt: 6, err: denial}
 	svc.SetMonitoringBudget(NewMonitoringProbeBudgetService(budget))
 	svc.accountTestService.httpUpstream = monitoringBudgetHTTP{base: upstream}
 	_, err := svc.SaveNewAPIConfig(t.Context(), 1, NewAPIConfigRequest{UserID: 7, AccessToken: "fixture-secret", AccountIDs: []int64{1, 2}})
 	require.ErrorIs(t, err, denial)
 	require.Zero(t, auth.saves, "a deferred proof must not save a partial account binding")
-	require.Len(t, budget.requests, 5, "do not continue to another selected account after a deferred proof")
+	require.Len(t, budget.requests, 6, "do not continue to another selected account after a deferred proof")
 }

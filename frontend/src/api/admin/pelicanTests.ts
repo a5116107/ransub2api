@@ -125,8 +125,8 @@ export async function listResults(page = 1, pageSize = 20, planId = 0, signal?: 
   return data
 }
 
-export async function getResult(id: number): Promise<PelicanGroupTestResult> {
-  const { data } = await apiClient.get<PelicanGroupTestResult>(`/admin/pelican-group-test-results/${id}`)
+export async function getResult(id: number, signal?: AbortSignal): Promise<PelicanGroupTestResult> {
+  const { data } = await apiClient.get<PelicanGroupTestResult>(`/admin/pelican-group-test-results/${id}`, { signal })
   return data
 }
 

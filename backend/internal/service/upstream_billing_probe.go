@@ -1225,6 +1225,9 @@ func upstreamBillingRateAt(data map[string]any, now time.Time) (float64, bool) {
 		if data["provider"] != "new_api" || data["object"] != "new_api.group_billing" || scope != "group" {
 			return 0, false
 		}
+		if data["group_rate_source"] != "user_groups" {
+			return 0, false
+		}
 		declaration, present := upstreamBillingApplicabilityFromData(data)
 		if !present || declaration == nil || now.Before(declaration.ObservedAt) || !now.Before(declaration.ExpiresAt) {
 			return 0, false

@@ -1,4 +1,16 @@
 export default {
+  lines: {
+    deleted: '已删除 · 仅历史观测',
+    pagination: '线路与观测分页', page: '第 {page} 页 · 当前范围 {total} 条线路',
+    title: '上游线路', scope: '按当前账号配置归属，测试与用量各自保留模型及测量时间。调度开启不等于模型已验真。',
+    participation: '当前页参与状态', all: '全部线路', on: '调度开启', off: '调度关闭', empty: '当前页没有匹配线路；切换筛选或分页，不自动扩大来源。', notCertified: '完整资格需分别核对',
+    purchaseRate: '上游售给我的倍率', localRates: '本地准入 U {admission} / 估算 C {estimate}', answerAndIdentity: '答题质量 / 模型身份', noQuality: '当前范围暂无明确质量结论', identityUnknown: '模型身份与答题正确分别核验，未测不补绿。',
+    cacheAndWait: 'Token缓存利用 / 等待', noComparable: '暂无当前范围可比样本', firstText: '首文本均值', cacheScope: '逐模型/服务档展示已采集行；非全Key缓存率，未展示行下钻查看。', activity: '业务观测 / 容量', usageRows: '{count} 条用量记录', completionUnknown: '用量记录没有完整失败分母，不据此算请求完成率。', capacity: '配置并发 {count}，不是实时可用槽位。',
+    tests: '模型测试', testPlans: '检测计划与历史', pelican: '鹈鹕测试', modelNotRecorded: '被测模型未记录', generated: '已生成 · 非验真通过', executionFailed: '执行失败 · 非模型答错', deferred: '检测延期 · 非质量失败', finalAccount: '最终归属账号 #{id}', priorAttempt: '前序失败尝试 #{id}',
+    historicalArtwork: '历史作品 · 不覆盖最近执行结果，不证明当前模型身份或可用性', retryArtwork: '重新读取作品（不重新测试）', artworkTitle: '鹈鹕历史作品与测试模型', testScopeUnknown: '本范围模型测试未读取或口径不适用；不借其他模型结果。', noTests: '本窗口无归属本账号的被测模型记录；不把分组成功授予全部账号。', otherTestsUnknown: '连通性、模型指纹和定向缓存的独立结论未由本查询采集；上方业务统计不替代这些测试。', testsCoverage: '本页账号的模型测试组合：展示 {shown} / {total}；有数量上限，不代表全站覆盖。',
+    stickyScope: '当前配置和历史观测分开；原会话粘性、价格及人工保护保持。', details: '查看线路依据', priceEdit: '价格与手动填写', priceAuthorization: '自动查询授权', aggregateDetails: '展开聚合对照与原诊断数据'
+  },
+
   sharedMonitoring: {
     stateUnknown: '已保存状态尚未重新核实，旧模式、修订和计划结论已撤下。请先重新读取；草稿保留，不会重放上次写入。',
     issuesTitle: '{count} 条已保存计划需要核对',

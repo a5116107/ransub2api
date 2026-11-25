@@ -110,14 +110,16 @@ type NewAPIToken struct {
 	Name            string   `json:"name"`
 	Key             string   `json:"key"`
 	Group           string   `json:"group"`
+	BillingGroupID  string   `json:"billing_group_id"`
 	CrossGroupRetry bool     `json:"cross_group_retry"`
 	RouteGroups     []string `json:"route_groups"`
 }
 type newAPIData struct {
-	wallet  float64
-	ratios  map[string]float64
-	tokens  []NewAPIToken
-	pricing json.RawMessage
+	wallet       float64
+	ratios       map[string]float64
+	publicRatios map[string]float64
+	tokens       []NewAPIToken
+	pricing      json.RawMessage
 }
 
 func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
@@ -238,7 +240,7 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 	if !newAPIFinite(wallet) || math.Abs(wallet) > 1e12 {
 		return nil, newAPIError("invalid_user_wallet")
 	}
-	result := &newAPIData{wallet: wallet, ratios: map[string]float64{}, tokens: []NewAPIToken{}}
+	result := &newAPIData{wallet: wallet, ratios: map[string]float64{}, publicRatios: map[string]float64{}, tokens: []NewAPIToken{}}
 	// A missing pricing endpoint does not erase a successfully verified wallet.
 	var pricing json.RawMessage
 	if e := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/pricing", &pricing); e == nil {
@@ -249,12 +251,36 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 			result.pricing = pricing
 			for g, r := range ratios {
 				if r != nil && validNewAPIGroupRate(g, *r) {
-					result.ratios[g] = *r
+					result.publicRatios[g] = *r
 				}
 			}
 		}
 	} else if newAPIRequestRequiresWait(e) || monitoringProbeDeferral(e, s.currentTime()) != nil {
 		return nil, e
+	}
+	// Public pricing may ignore bearer authentication on templates whose
+	// optional login middleware only checks a browser session. A verified wallet
+	// is not evidence that the pricing handler used this user's group override.
+	// Read the UserAuth-protected endpoint with the same final management headers.
+	var groups json.RawMessage
+	err := s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/user/self/groups", &groups)
+	var httpErr *newAPIHTTPError
+	if errors.As(err, &httpErr) && (httpErr.statusCode == http.StatusNotFound || httpErr.statusCode == http.StatusMethodNotAllowed) {
+		err = s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/user/groups", &groups)
+	}
+	if err == nil {
+		fields, valid := availabilityJSONObject(gjson.ParseBytes(groups))
+		if entries, ok := availabilityJSONObject(fields["data"]); valid && ok && len(entries) <= 1024 && fields["success"].Type == gjson.True {
+			for group, raw := range entries {
+				entry, unique := availabilityJSONObject(raw)
+				rate := entry["ratio"]
+				if unique && rate.Type == gjson.Number && validNewAPIGroupRate(group, rate.Float()) {
+					result.ratios[group] = rate.Float()
+				}
+			}
+		}
+	} else if newAPIRequestRequiresWait(err) || monitoringProbeDeferral(err, s.currentTime()) != nil {
+		return nil, err
 	}
 	seen := map[int64]bool{}
 	queryPage := 0
@@ -304,7 +330,7 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 			return nil, newAPIError("inventory_limit")
 		}
 		for _, t := range items {
-			if t.ID <= 0 || seen[t.ID] || len(t.Key) > 512 || len(t.Group) > 128 || len(t.Name) > 1024 {
+			if t.ID <= 0 || seen[t.ID] || len(t.Key) > 512 || len(t.Group) > 128 || len(t.BillingGroupID) > 128 || len(t.Name) > 1024 {
 				return nil, newAPIError("invalid_inventory_pagination")
 			}
 			seen[t.ID] = true
@@ -336,7 +362,7 @@ func newAPIFixedGroupRate(t NewAPIToken, d *newAPIData) (float64, bool) {
 	// A single route is fixed only when it names the declared group. Older
 	// inventories omit route_groups; their fixed group remains usable. Never
 	// substitute a different group's ratio or mutate upstream key configuration.
-	fixedGroup := !t.CrossGroupRetry && (len(t.RouteGroups) == 0 ||
+	fixedGroup := !t.CrossGroupRetry && (t.BillingGroupID == "" || t.BillingGroupID == t.Group) && (len(t.RouteGroups) == 0 ||
 		(len(t.RouteGroups) == 1 && t.RouteGroups[0] == t.Group))
 	rate, ok := d.ratios[t.Group]
 	return rate, ok && fixedGroup && validNewAPIGroupRate(t.Group, rate)
@@ -351,7 +377,8 @@ func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *
 		LastError:     "unsupported_group",
 		Data: map[string]any{
 			"provider": "new_api", "group": sanitizeUpstreamBalanceText(t.Group, 128),
-			"token_id": t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group",
+			"group_rate_source": "unconfirmed",
+			"token_id":          t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group",
 		},
 		Balance: &UpstreamBalanceSnapshot{
 			Status: UpstreamBillingProbeStatusOK, LastAttemptAt: now,
@@ -362,11 +389,15 @@ func newAPISnapshot(t NewAPIToken, d *newAPIData, interval int, now time.Time) *
 			},
 		},
 	}
+	if rate, ok := d.publicRatios[t.Group]; ok {
+		snap.Data["public_group_rate_multiplier"] = rate
+	}
 	if rate, ok := newAPIFixedGroupRate(t, d); ok {
 		snap.Status = UpstreamBillingProbeStatusOK
 		snap.LastError = ""
 		snap.ReceivedAt = probeTimePtr(now)
 		snap.FreshUntil = probeTimePtr(fresh)
+		snap.Data["group_rate_source"] = "user_groups"
 		for _, k := range []string{"group_rate_multiplier", "resolved_rate_multiplier", "effective_rate_multiplier"} {
 			snap.Data[k] = rate
 		}
@@ -401,7 +432,10 @@ func applyNewAPIBillingApplicability(data map[string]any, pricing []byte, group 
 	entryFields, valid := availabilityJSONObject(selected)
 	version := fields["pricing_version"]
 	boundRate := entryFields["group_rate_multiplier"]
+	catalog, catalogValid := availabilityJSONObject(fields["group_ratio"])
+	catalogRate := catalog[group]
 	if !valid || version.Type != gjson.String || !billingDeclarationToken(version.String(), 128) ||
+		!catalogValid || catalogRate.Type != gjson.Number || !equalBillingMultiplier(catalogRate.Float(), rate) ||
 		boundRate.Type != gjson.Number || !equalBillingMultiplier(boundRate.Float(), rate) {
 		return
 	}

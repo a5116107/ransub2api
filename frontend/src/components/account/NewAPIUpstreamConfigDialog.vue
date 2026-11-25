@@ -42,7 +42,8 @@
               <span class="font-medium text-gray-800 dark:text-gray-100">{{ row.name }}</span>
               <span :class="row.matched ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'">{{ row.matched ? t('admin.accounts.upstreamBilling.newAPI.matched') : t('admin.accounts.upstreamBilling.newAPI.needsSelection') }}</span>
               <span v-if="row.group" class="text-gray-600 dark:text-gray-300">{{ t('admin.accounts.upstreamBilling.newAPI.group', { name: row.group }) }}</span>
-              <span class="text-gray-600 dark:text-gray-300">{{ row.group !== 'auto' && isFixedRate(row.rate) ? t('admin.accounts.upstreamBilling.newAPI.ratio', { value: row.rate }) : t('admin.accounts.upstreamBilling.newAPI.noFixedRatio') }}</span>
+              <span class="text-gray-600 dark:text-gray-300" data-testid="new-api-personal-rate">{{ row.group !== 'auto' && row.rate_source === 'user_groups' && isFixedRate(row.rate) ? t('admin.accounts.upstreamBilling.newAPI.personalRatio', { value: row.rate }) : t('admin.accounts.upstreamBilling.newAPI.personalUnconfirmed') }}</span>
+              <span v-if="isFixedRate(row.public_rate)" class="text-xs text-gray-500" data-testid="new-api-public-rate">{{ t('admin.accounts.upstreamBilling.newAPI.publicRatio', { value: row.public_rate }) }}</span>
             </div>
             <label v-if="row.token_options?.length && (!row.matched || row.token_options.length > 1)" class="block text-sm text-gray-700 dark:text-gray-200">
               {{ t('admin.accounts.upstreamBilling.newAPI.chooseToken') }}

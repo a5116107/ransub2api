@@ -62,7 +62,7 @@ func TestMonitoringProbeCoveragePhysicalAndUnknown(t *testing.T) {
 	require.EqualValues(t, 6, c.Accounts)
 	require.EqualValues(t, 1, c.NewAPIAccounts)
 	require.EqualValues(t, 3, c.UnresolvedAccounts)
-	require.EqualValues(t, 7, c.MinimumRequestsPerSweep)
+	require.EqualValues(t, 8, c.MinimumRequestsPerSweep)
 	require.False(t, c.InventoryComplete)
 }
 
@@ -216,7 +216,7 @@ func TestMonitoringProbeCoveragePeriodicSitesManagementAndInvalidCadence(t *test
 		return CompileMonitoringProbeCoverage(DefaultMonitoringProbeBudgetSettings(), billing, accounts, true, nil, true, nil, true, nil, true, time.Now())
 	}
 	c := compile()
-	require.EqualValues(t, 192, c.PeriodicSites.BillingRequestsPerDay)
+	require.EqualValues(t, 240, c.PeriodicSites.BillingRequestsPerDay)
 	require.Zero(t, c.PeriodicSites.UnresolvedBillingTargets)
 	billing.IntervalMinutes = 0
 	c = compile()
@@ -320,16 +320,16 @@ func TestMonitoringProbeCoverageBillingManagementScopes(t *testing.T) {
 			s := c.BillingScopes
 			switch scenario {
 			case "shared_authorization":
-				require.EqualValues(t, 8, s.MaxCredentialRequestsPerSweep)
+				require.EqualValues(t, 10, s.MaxCredentialRequestsPerSweep)
 				require.EqualValues(t, 2, s.CredentialGroups, "management traffic must not use the inference-key bucket")
 				require.EqualValues(t, 1, s.NewAPIAuthorizationGroups)
 				require.False(t, c.CanSave)
 			case "separate_authorizations":
-				require.EqualValues(t, 4, s.MaxCredentialRequestsPerSweep)
+				require.EqualValues(t, 5, s.MaxCredentialRequestsPerSweep)
 				require.EqualValues(t, 3, s.CredentialGroups, "separate opaque authorizations are not proven identical")
 				require.True(t, c.CanSave)
 			case "extra_shared_credential":
-				require.EqualValues(t, 10, s.MaxCredentialRequestsPerSweep, "additional final auth headers still share the relay's credential bucket")
+				require.EqualValues(t, 12, s.MaxCredentialRequestsPerSweep, "additional final auth headers still share the relay's credential bucket")
 				require.EqualValues(t, 2, s.CredentialGroups)
 				require.False(t, c.CanSave)
 			case "missing_profile", "changed_site":

@@ -4,7 +4,7 @@
       <HelpTooltip class="-ml-1" width-class="w-max max-w-[calc(100vw-2rem)]" data-testid="upstream-billing-details">
         <template #trigger>
           <button
-            v-if="canConfigure && (snapshot?.status === 'unsupported' || account.extra?.upstream_billing_provider === 'new_api')"
+            v-if="!readOnly && canConfigure && (snapshot?.status === 'unsupported' || account.extra?.upstream_billing_provider === 'new_api')"
             type="button"
             class="cursor-help border-b border-dotted border-gray-300 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 dark:border-dark-600"
             :class="hasEffectiveRate ? 'font-mono text-gray-800 dark:text-gray-200' : statusClass || 'text-gray-400 dark:text-gray-500'"
@@ -88,6 +88,7 @@
         {{ statusLabel }}
       </span>
       <button
+        v-if="!readOnly"
         type="button"
         class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
         :disabled="probing"
@@ -135,6 +136,8 @@
         </div>
       </template>
     </details>
+    <p v-if="isNewAPIGroup" class="text-xs text-gray-500 dark:text-gray-400" data-testid="upstream-price-source">{{ t(data?.group_rate_source === 'user_groups' ? 'admin.accounts.upstreamBilling.newAPI.personalSource' : 'admin.accounts.upstreamBilling.newAPI.personalUnconfirmed') }}</p>
+    <p v-if="isNewAPIGroup && typeof data?.public_group_rate_multiplier === 'number' && Number.isFinite(data.public_group_rate_multiplier) && data.public_group_rate_multiplier >= 0" class="text-xs text-gray-500 dark:text-gray-400" data-testid="upstream-public-quote">{{ t('admin.accounts.upstreamBilling.newAPI.publicRatio', { value: data.public_group_rate_multiplier }) }}</p>
     <details v-if="manualApplicability" class="my-1 max-w-sm text-xs" data-testid="upstream-manual-applicability">
       <summary class="cursor-pointer text-blue-600 dark:text-blue-400">{{ t('admin.accounts.upstreamBilling.manualApplicability.title') }}</summary>
       <p class="mt-1" :class="manualStatus === 'active' ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'" data-testid="upstream-manual-status">{{ t(`admin.accounts.upstreamBilling.manualApplicability.${manualStatus}`) }}</p>
@@ -235,6 +238,7 @@ const props = withDefaults(defineProps<{
   probing?: boolean
   globalProbeEnabled?: boolean
   canConfigure?: boolean
+  readOnly?: boolean
 }>(), {
   globalProbeEnabled: true,
   canConfigure: true
@@ -324,6 +328,7 @@ const minuteInTimeZone = (timestamp: number, timeZone?: string) => {
 }
 const effectiveMultiplier = (billing?: UpstreamBillingData) => {
   if (!billing) return null
+  if (billing.provider === 'new_api' && billing.group_rate_source !== 'user_groups') return null
   if (billing.billing_scope !== 'token' && billing.provider !== 'new_api') return null
   const base = billing.resolved_rate_multiplier
   if (typeof base !== 'number' || !Number.isFinite(base) || base < 0) return null

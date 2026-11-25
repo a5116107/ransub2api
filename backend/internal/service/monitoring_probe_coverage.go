@@ -169,10 +169,10 @@ func CompileMonitoringProbeCoverage(policy MonitoringProbeBudgetSettings, billin
 		}
 		result.Accounts++
 		if target.NewAPIBindingIdentity != "" && target.NewAPIBindingIdentity == NewAPIAccountFingerprint(account) {
-			// status, wallet, pricing and at least one inventory page; raw-key
+			// Status, wallet, pricing, authenticated user groups and at least one inventory page; raw-key
 			// verification and any additional pages can only increase this.
 			result.NewAPIAccounts++
-			result.MinimumRequestsPerSweep += 4
+			result.MinimumRequestsPerSweep += 5
 			scopes.addNewAPI(target)
 			continue
 		}
@@ -316,9 +316,9 @@ func (d *monitoringProbeCoverageBillingDemand) addNewAPI(target MonitoringProbeC
 		}
 		return
 	}
-	d.sites[site] += 4
+	d.sites[site] += 5
 	d.bucketedTargets++
-	d.credentials[fmt.Sprintf("new_api_authorization:%d", target.NewAPIAuthorizationID)] += 4
+	d.credentials[fmt.Sprintf("new_api_authorization:%d", target.NewAPIAuthorizationID)] += 5
 	d.management[target.NewAPIAuthorizationID] = struct{}{}
 	// The management secret is deliberately never loaded/decrypted. Reuse the
 	// real builder to retain additional final credentials, excluding the known
@@ -326,7 +326,7 @@ func (d *monitoringProbeCoverageBillingDemand) addNewAPI(target MonitoringProbeC
 	headers := make(http.Header)
 	applyNewAPIManagementHeaders(headers, &target.Account, target.NewAPIAuthorizationUserID, "")
 	headers.Del("Authorization")
-	if d.addCredentials(headers, 4, true) {
+	if d.addCredentials(headers, 5, true) {
 		d.credentialTargets++
 	}
 }

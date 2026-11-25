@@ -11,15 +11,20 @@ import (
 )
 
 type operationsAccount struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Key         string    `json:"key"`
-	Attribution string    `json:"attribution"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	Deleted     bool      `json:"deleted"`
-	Schedulable bool      `json:"schedulable"`
-	Concurrency int       `json:"concurrency"`
-	Status      string    `json:"status"`
+	ID             int64           `json:"id"`
+	Name           string          `json:"name"`
+	Key            string          `json:"key"`
+	Attribution    string          `json:"attribution"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	Deleted        bool            `json:"deleted"`
+	Schedulable    bool            `json:"schedulable"`
+	Concurrency    int             `json:"concurrency"`
+	Status         string          `json:"status"`
+	Platform       string          `json:"platform"`
+	Type           string          `json:"type"`
+	RateMultiplier float64         `json:"rate_multiplier"`
+	CostMultiplier *float64        `json:"cost_multiplier"`
+	BillingProbe   json.RawMessage `json:"billing_probe"`
 }
 
 // The projection never includes credentials. Only the selected endpoint fields
@@ -32,7 +37,13 @@ func operationsAccounts(ctx context.Context, tx *sql.Tx, f service.UpstreamOpera
 	rows, err := tx.QueryContext(ctx, `SELECT a.id,a.name,a.platform,a.type,
  jsonb_build_object('base_url',a.credentials->'base_url','api_base_urls',a.credentials->'api_base_urls','account_mode',a.credentials->'account_mode','api_protocol',a.credentials->'api_protocol','provider_profile',a.credentials->'provider_profile','client_id',a.credentials->'client_id','auth_mode',a.credentials->'auth_mode','openai_auth_mode',a.credentials->'openai_auth_mode'),
  jsonb_build_object('custom_base_url_enabled',a.extra->'custom_base_url_enabled','custom_base_url',a.extra->'custom_base_url','openai_siwc',a.extra->'openai_siwc','openai_prism_browser',a.extra->'openai_prism_browser','openai_excel_bps',a.extra->'openai_excel_bps'),
- a.updated_at,a.deleted_at IS NOT NULL,a.parent_account_id,a.schedulable,a.concurrency,a.status
+ a.updated_at,a.deleted_at IS NOT NULL,a.parent_account_id,a.schedulable,a.concurrency,a.status,a.rate_multiplier,a.extra->'cost_multiplier',
+ CASE WHEN jsonb_typeof(a.extra->'upstream_billing_probe')='object' THEN jsonb_build_object(
+ 'status',a.extra->'upstream_billing_probe'->'status','received_at',a.extra->'upstream_billing_probe'->'received_at','fresh_until',a.extra->'upstream_billing_probe'->'fresh_until',
+ 'last_attempt_at',a.extra->'upstream_billing_probe'->'last_attempt_at','next_probe_at',a.extra->'upstream_billing_probe'->'next_probe_at',
+ 'data',(SELECT jsonb_object_agg(key,value) FROM jsonb_each(CASE WHEN jsonb_typeof(a.extra->'upstream_billing_probe'->'data')='object' THEN a.extra->'upstream_billing_probe'->'data' ELSE '{}'::jsonb END)
+ WHERE key IN ('provider','object','schema_version','billing_scope','group','group_rate_source','public_group_rate_multiplier','group_rate_multiplier','user_rate_multiplier','resolved_rate_multiplier','effective_rate_multiplier','peak_rate_enabled','peak_start','peak_end','peak_rate_multiplier','timezone')))
+ ELSE 'null'::jsonb END
  FROM accounts a WHERE ($3::bigint=0 OR a.id=$3) AND (a.deleted_at IS NULL OR EXISTS(SELECT 1 FROM usage_logs u WHERE u.account_id=a.id AND u.created_at >= $1 AND u.created_at < $2))`, f.From, f.Until, f.AccountID)
 	if err != nil {
 		return nil, err
@@ -44,7 +55,9 @@ func operationsAccounts(ctx context.Context, tx *sql.Tx, f service.UpstreamOpera
 		var creds, extra []byte
 		var deleted bool
 		var parent sql.NullInt64
-		if err = rows.Scan(&a.ID, &a.Name, &a.Platform, &a.Type, &creds, &extra, &a.UpdatedAt, &deleted, &parent, &a.Schedulable, &a.Concurrency, &a.Status); err != nil {
+		var rate float64
+		var cost, billing []byte
+		if err = rows.Scan(&a.ID, &a.Name, &a.Platform, &a.Type, &creds, &extra, &a.UpdatedAt, &deleted, &parent, &a.Schedulable, &a.Concurrency, &a.Status, &rate, &cost, &billing); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(creds, &a.Credentials); err != nil {
@@ -60,7 +73,9 @@ func operationsAccounts(ctx context.Context, tx *sql.Tx, f service.UpstreamOpera
 		if key == "" {
 			key = "unknown:" + attribution
 		}
-		out = append(out, operationsAccount{ID: a.ID, Name: a.Name, Key: key, Attribution: attribution, UpdatedAt: a.UpdatedAt, Deleted: deleted, Schedulable: a.Schedulable, Concurrency: a.Concurrency, Status: a.Status})
+		var costValue *float64
+		_ = json.Unmarshal(cost, &costValue)
+		out = append(out, operationsAccount{ID: a.ID, Name: a.Name, Key: key, Attribution: attribution, UpdatedAt: a.UpdatedAt, Deleted: deleted, Schedulable: a.Schedulable, Concurrency: a.Concurrency, Status: a.Status, Platform: a.Platform, Type: a.Type, RateMultiplier: rate, CostMultiplier: costValue, BillingProbe: billing})
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
@@ -69,7 +84,7 @@ func operationsAccounts(ctx context.Context, tx *sql.Tx, f service.UpstreamOpera
 }
 
 const upstreamOperationsCohort = `accounts_config AS (
- SELECT * FROM jsonb_to_recordset($3::jsonb) AS c(id bigint,name text,key text,attribution text,updated_at timestamptz,deleted boolean,schedulable boolean,concurrency integer,status text)
+ SELECT * FROM jsonb_to_recordset($3::jsonb) AS c(id bigint,name text,key text,attribution text,updated_at timestamptz,deleted boolean,schedulable boolean,concurrency integer,status text,platform text,type text,rate_multiplier numeric,cost_multiplier numeric,billing_probe jsonb)
 ), cohort AS (
  SELECT * FROM accounts_config WHERE ($4='' OR key=$4) AND ($5::bigint=0 OR id=$5)
 )`
@@ -131,7 +146,7 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
  SELECT jsonb_build_object('summary',(SELECT to_jsonb(s) FROM summary s),'total',(SELECT count(*) FROM buckets),
  'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (SELECT * FROM buckets ORDER BY ` + order + ` LIMIT $9 OFFSET $10)b),'[]'::jsonb),
  'accounts',COALESCE((SELECT jsonb_agg(to_jsonb(c)) FROM (SELECT id,name,key,attribution,updated_at,deleted FROM cohort WHERE ($5::bigint>0 OR id IN (SELECT account_id FROM scoped)) ORDER BY id LIMIT 100)c),'[]'::jsonb),
- 'members',COALESCE((SELECT jsonb_agg(to_jsonb(m)) FROM (SELECT id,name,key,attribution,updated_at,deleted,schedulable,concurrency,status FROM cohort c WHERE ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6)) ORDER BY id LIMIT $9 OFFSET $10)m),'[]'::jsonb),
+ 'members',COALESCE((SELECT jsonb_agg(to_jsonb(m)) FROM (SELECT c.*,(SELECT to_jsonb(stats) FROM (SELECT ` + upstreamOperationsAggregate + ` FROM priced WHERE account_id=c.id)stats) AS metrics FROM cohort c WHERE ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6)) ORDER BY id LIMIT $9 OFFSET $10)m),'[]'::jsonb),
  'member_total',(SELECT count(*) FROM cohort c WHERE ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6))),
  'catalog',COALESCE((SELECT jsonb_agg(to_jsonb(g)) FROM (SELECT key AS key,key AS name,count(*) AS accounts FROM cohort c WHERE NOT deleted AND ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6)) GROUP BY key ORDER BY key LIMIT $9 OFFSET $10)g),'[]'::jsonb),
  'capacity',(SELECT jsonb_build_object('accounts',count(*),'schedulable',count(*) FILTER(WHERE schedulable AND status='active'),'configured_concurrency',COALESCE(sum(concurrency),0)) FROM cohort c WHERE NOT deleted AND ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6))),
@@ -143,6 +158,11 @@ func (r *channelRepository) ReadUpstreamOperations(ctx context.Context, f servic
 	}
 	out.Errors = readUpstreamSection(ctx, tx, upstreamOperationsErrors, args[:8]...)
 	out.RawCache = readUpstreamSection(ctx, tx, upstreamOperationsRawCache, args...)
+	if f.Model != "" && f.ModelScope != "public" {
+		out.ModelTests = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "Tests record their requested model; mapped or billed aliases cannot be inferred", QueriedAt: out.QueriedAt}
+	} else {
+		out.ModelTests = readUpstreamSection(ctx, tx, upstreamOperationsModelTests, args...)
+	}
 	if f.Model != "" && f.ModelScope == "recorded" {
 		out.Attempts = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "Per-attempt billing model is not observed; final usage aliases cannot be borrowed", QueriedAt: out.QueriedAt}
 	} else {
@@ -197,3 +217,23 @@ const upstreamOperationsErrors = `WITH ` + upstreamOperationsCohort + `, params 
  SELECT jsonb_build_object('source','retained ops_error_logs; current account cohort; count_tokens excluded; no complete request failure denominator','records',(SELECT count(*) FROM scoped),'upstream_5xx',(SELECT count(*) FROM scoped WHERE upstream_status_code>=500),'latest_sample_at',(SELECT max(created_at) FROM scoped),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(b)) FROM (SELECT * FROM buckets ORDER BY records DESC,error_type,error_phase,status_code LIMIT 20)b),'[]'::jsonb),'bucket_total',(SELECT count(*) FROM buckets),'error_rate',NULL)`
 
 var _ service.UpstreamOperationsRepository = (*channelRepository)(nil)
+
+// Only persisted metadata is projected. Artwork remains behind the original
+// admin result endpoint; previous attempts never become successful account tests.
+const upstreamOperationsModelTests = `WITH ` + upstreamOperationsCohort + `,
+ members AS (SELECT id FROM cohort c WHERE NOT deleted AND ($6::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=c.id AND ag.group_id=$6)) ORDER BY id LIMIT $9 OFFSET $10),
+ observed AS (
+ SELECT r.id,r.plan_id,p.group_id,r.account_id,r.status,
+ CASE WHEN jsonb_typeof(r.pelican_config->'model_id')='string' THEN NULLIF(r.pelican_config->>'model_id','') END AS model,
+ CASE WHEN jsonb_typeof(r.pelican_config->'reasoning_effort')='string' THEN r.pelican_config->>'reasoning_effort' END AS reasoning_effort,
+ r.started_at,r.finished_at,r.latency_ms,(r.status='success' AND r.response_text<>'') AS has_output,
+ CASE WHEN jsonb_typeof(r.attempts)='array' THEN (SELECT COALESCE(jsonb_agg(jsonb_build_object('account_id',a->'account_id')),'[]'::jsonb) FROM jsonb_array_elements(r.attempts) a) ELSE '[]'::jsonb END AS attempts
+ FROM pelican_group_test_results r JOIN pelican_group_test_plans p ON p.id=r.plan_id
+ WHERE r.account_id IN (SELECT id FROM members) AND r.started_at >= $1 AND r.started_at < $2
+ AND ($6::bigint=0 OR p.group_id=$6) AND ($7='' OR r.pelican_config->>'model_id'=$7) AND $8::text IS NOT NULL
+), latest AS (
+ SELECT DISTINCT ON(account_id,group_id,model,reasoning_effort) * FROM observed ORDER BY account_id,group_id,model,reasoning_effort,started_at DESC,id DESC
+)
+ SELECT jsonb_build_object('version',1,'source','persisted_pelican_group_test_frozen_model','rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
+ SELECT l.*,(SELECT to_jsonb(art) FROM (SELECT o.id,o.account_id,o.group_id,o.model,o.reasoning_effort,o.started_at FROM observed o WHERE o.has_output AND (o.started_at,o.id)<=(l.started_at,l.id) AND o.account_id=l.account_id AND o.group_id=l.group_id AND o.model IS NOT DISTINCT FROM l.model AND o.reasoning_effort IS NOT DISTINCT FROM l.reasoning_effort ORDER BY o.started_at DESC,o.id DESC LIMIT 1)art) AS artwork
+ FROM latest l ORDER BY account_id,started_at DESC,id DESC LIMIT 100)x),'[]'::jsonb),'total',(SELECT count(*) FROM latest))`

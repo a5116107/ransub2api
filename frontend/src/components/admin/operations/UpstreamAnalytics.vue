@@ -25,13 +25,18 @@
         <section class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.discovery') }}</h2><p class="text-xs text-gray-500">{{ t('upstreamOps.discoveryNote') }}</p><div class="flex flex-wrap gap-2"><button v-for="c in snapshot.usage.catalog" :key="c.key" class="btn btn-secondary max-w-full break-all" @click="selectUpstream(c.key)">{{ c.name }} · {{ c.accounts }}</button></div><p class="text-xs">{{ applied.page }} · {{ snapshot.usage.catalog_total }}</p></section>
         <section v-if="applied.upstream || applied.account_id" class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.currentMembers') }}</h2><p class="text-xs text-gray-500">{{ t('upstreamOps.memberNote') }}</p><div class="flex flex-wrap gap-2"><button v-for="a in snapshot.usage.members" :key="a.id" class="btn btn-secondary" data-testid="member-drill" @click="selectAccount(a.id)">{{ a.name }} #{{ a.id }}</button></div><p class="text-xs">{{ applied.page }} · {{ snapshot.usage.member_total }}</p></section>
         <section class="card p-4" data-testid="upstream-summary"><h2>{{ t('upstreamOps.summary') }}</h2><p>{{ t('upstreamOps.requests') }} {{ snapshot.usage.summary.requests }} · {{ t('upstreamOps.unknownUpstream') }} {{ snapshot.usage.summary.unknown_upstream_requests }}</p></section>
-        <section class="card space-y-4 p-4">
+        <UpstreamLineCards :snapshot="snapshot" @select="selectAccount" @edit="openAccountEditor" @configure="openPriceAuthorization" />
+        <nav class="flex flex-wrap items-center gap-3" :aria-label="t('upstreamOps.lines.pagination')" data-testid="operations-pagination">
+          <button class="btn btn-secondary" data-testid="operations-previous" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button>
+          <span class="text-sm">{{ t('upstreamOps.lines.page', { page: applied.page, total: snapshot.usage.member_total ?? 0 }) }}</span>
+          <button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.member_total || 0, snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, snapshot.raw_cache?.data?.total || 0, snapshot.attempts?.data?.total || 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button>
+        </nav>
+        <details class="card space-y-4 p-4" data-testid="operations-diagnostics"><summary class="cursor-pointer font-semibold">{{ t('upstreamOps.lines.aggregateDetails') }}</summary>
           <div class="flex flex-wrap items-center justify-between gap-3"><h2 class="font-semibold">{{ t('upstreamOps.compare') }} · {{ t(`upstreamOps.${applied.dimension}`) }}</h2><button class="btn btn-secondary" @click="overview">{{ t('upstreamOps.overview') }}</button></div>
           <p v-if="!snapshot.usage.rows.length">{{ t('upstreamOps.empty') }}</p>
           <div v-else class="overflow-x-auto"><table class="w-full min-w-[1000px] text-left text-sm"><thead><tr><th class="p-2">{{ t(`upstreamOps.${applied.dimension}`) }}</th><th v-for="key in amountKeys" :key="key" class="p-2">{{ t(`upstreamOps.${key}`) }}</th><th>P50 / P90 / P95 (ms)</th><th>{{ t('upstreamOps.duration') }}</th></tr></thead><tbody><tr v-for="row in snapshot.usage.rows" :key="row.key" class="border-t dark:border-dark-700"><td class="max-w-80 break-all p-2"><button v-if="applied.dimension !== 'model'" class="text-primary-600 underline" data-testid="drill-row" @click="drill(row)">{{ row.name }}</button><span v-else>{{ row.name }}</span></td><td v-for="key in amountKeys" :key="key" class="p-2">{{ key === 'requests' ? row.requests : formatMetric(row,key) }}</td><td>{{ number(row.p50_ms, 0) }} / {{ number(row.p90_ms, 0) }} / {{ number(row.p95_ms, 0) }}<span class="block text-xs">{{ t('upstreamOps.samples') }} {{ row.samples }} / {{ t('upstreamOps.unknown') }} {{ row.unknown_samples }}</span></td><td>{{ number(row.duration_p90_ms,0) }}</td></tr></tbody></table></div>
           <p class="text-xs text-gray-500">{{ t('upstreamOps.latencyNote') }}</p>
-          <div class="flex flex-wrap items-center gap-3"><button class="btn btn-secondary" :disabled="loading || applied.page <= 1" @click="page(-1)">{{ t('upstreamOps.previous') }}</button><span>{{ applied.page }} · {{ snapshot.usage.total }}</span><button class="btn btn-secondary" data-testid="operations-next" :disabled="loading || applied.page * applied.page_size >= Math.max(snapshot.usage.total, snapshot.usage.catalog_total || 0, snapshot.quality.data?.total || 0, snapshot.raw_cache?.data?.total || 0, snapshot.attempts?.data?.total || 0, applied.upstream || applied.account_id ? snapshot.usage.member_total || 0 : 0)" @click="page(1)">{{ t('upstreamOps.next') }}</button></div>
-        </section>
+        </details>
         <section v-if="snapshot.attempts" class="card min-w-0 space-y-4 p-4" data-testid="upstream-attempts" aria-labelledby="upstream-attempts-title">
           <h2 id="upstream-attempts-title" class="font-semibold">{{ t('upstreamOps.attempts.title') }}</h2>
           <p class="text-xs leading-5 text-gray-500">{{ t('upstreamOps.attempts.scope') }}</p>
@@ -133,14 +138,24 @@
         <section class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.quality') }}</h2><p class="text-sm text-gray-500">{{ t('upstreamOps.qualityNote') }}</p><p v-if="snapshot.quality.status !== 'ready'" role="alert">{{ snapshot.quality.error }}</p><template v-else-if="snapshot.quality.data"><p>{{ t('upstreamOps.rounds') }} {{ snapshot.quality.data.summary.rounds }} · {{ t('upstreamOps.passed') }} {{ snapshot.quality.data.summary.passed }} · {{ t('upstreamOps.degraded') }} {{ snapshot.quality.data.summary.degraded }} · {{ t('upstreamOps.inconclusive') }} {{ snapshot.quality.data.summary.inconclusive }}</p><div class="overflow-x-auto"><table class="w-full min-w-[650px] text-left text-sm"><tbody><tr v-for="round in snapshot.quality.data.rows" :key="round.id"><td class="p-2">#{{ round.account_id }}</td><td>{{ round.measured_model }}</td><td>{{ round.observed_at }}</td><td><QualityRoundAssessment :round="round" :queried-at="snapshot.quality.queried_at" /></td><td><a class="underline text-primary-600" :href="`/admin/account-quality?plan_id=${round.plan_id}`">{{ t('upstreamOps.plan') }} #{{ round.plan_id }}</a></td></tr></tbody></table></div><p class="text-xs">{{ t('upstreamOps.pageScope') }} {{ applied.page }} · {{ snapshot.quality.data.total }}</p></template><a class="text-primary-600 underline" href="/admin/account-quality">{{ t('upstreamOps.quality') }}</a></section>
         <section class="card space-y-3 p-4"><h2 class="font-semibold">{{ t('upstreamOps.errors') }}</h2><p class="text-sm text-gray-500">{{ t('upstreamOps.errorNote') }}</p><p v-if="snapshot.errors.status !== 'ready'" role="alert">{{ snapshot.errors.error }}</p><template v-else-if="snapshot.errors.data"><p>{{ t('upstreamOps.errorRecords') }} {{ snapshot.errors.data.records }} · 5xx {{ snapshot.errors.data.upstream_5xx }}</p><p v-for="(row, i) in snapshot.errors.data.rows" :key="i" class="text-sm">{{ row.error_type }} / {{ row.error_phase }} / {{ row.status_code }}: {{ row.records }}</p></template><a class="text-primary-600 underline" href="/admin/ops">{{ t('upstreamOps.errors') }}</a></section>
       </template>
+      <p v-if="editorLoading" role="status">{{ t('common.loading') }}</p><p v-if="editorError" role="alert" class="text-red-600">{{ editorError }}</p>
+      <EditAccountModal v-if="editingAccount" :show="true" :account="editingAccount" :groups="editorGroups" :proxies="editorProxies" @close="closeEditors" @updated="accountSaved" />
+      <NewAPIUpstreamConfigDialog v-if="configuringAccount" :show="true" :account="configuringAccount" @close="closeEditors" @saved="accountSaved" />
     </div>
   </AppLayout>
 </template>
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import SmartOpsNav from './SmartOpsNav.vue'
+import UpstreamLineCards from './UpstreamLineCards.vue'
+import * as accountsAPI from '@/api/admin/accounts'
+import * as groupsAPI from '@/api/admin/groups'
+import * as proxiesAPI from '@/api/admin/proxies'
+import type { Account, AdminGroup, Proxy } from '@/types'
+const EditAccountModal = defineAsyncComponent(() => import('@/components/account/EditAccountModal.vue'))
+const NewAPIUpstreamConfigDialog = defineAsyncComponent(() => import('@/components/account/NewAPIUpstreamConfigDialog.vue'))
 import ProcurementCatalogManager from './ProcurementCatalogManager.vue'
 import ProcurementProductImpact from './ProcurementProductImpact.vue'
 import QualityRoundAssessment from './QualityRoundAssessment.vue'
@@ -161,6 +176,24 @@ const initial: OperationsQuery = { from:start.toISOString(),until:at.toISOString
 const draft=ref<OperationsQuery>({...initial}), applied=ref<OperationsQuery>({...initial})
 const snapshot=ref<OperationsSnapshot|null>(null), loading=ref(false), error=ref('')
 let request=0, alive=true, controller: AbortController|undefined
+const editingAccount=ref<Account|null>(null), configuringAccount=ref<Account|null>(null)
+const editorGroups=ref<AdminGroup[]>([]), editorProxies=ref<Proxy[]>([]), editorLoading=ref(false), editorError=ref('')
+let editorRequest=0
+function closeEditors(){editorRequest++;editingAccount.value=null;configuringAccount.value=null;editorError.value='';editorLoading.value=false}
+async function openAccountEditor(id:number){
+ closeEditors();const generation=++editorRequest;editorLoading.value=true
+ try{const [account,groups,proxies]=await Promise.all([accountsAPI.getById(id),groupsAPI.getAllIncludingInactive(),proxiesAPI.getAll()]);if(!alive||generation!==editorRequest)return;editingAccount.value=account;editorGroups.value=groups;editorProxies.value=proxies}
+ catch{if(alive&&generation===editorRequest)editorError.value=t('upstreamOps.queryFailed')}
+ finally{if(alive&&generation===editorRequest)editorLoading.value=false}
+}
+async function openPriceAuthorization(id:number){
+ closeEditors();const generation=++editorRequest;editorLoading.value=true
+ try{const account=await accountsAPI.getById(id);if(alive&&generation===editorRequest)configuringAccount.value=account}
+ catch{if(alive&&generation===editorRequest)editorError.value=t('upstreamOps.queryFailed')}
+ finally{if(alive&&generation===editorRequest)editorLoading.value=false}
+}
+async function accountSaved(){closeEditors();await load()}
+
 function number(v: number|null|undefined, decimals=6) { return v==null || !Number.isFinite(v) ? t('upstreamOps.unknown') : v.toLocaleString(undefined,{minimumFractionDigits:decimals,maximumFractionDigits:decimals}) }
 function percent(value: number | null | undefined) { return value != null && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : t('upstreamOps.unknown') }
 function cacheStatus(value: UpstreamRawCacheMetrics) { return value.requests === 0 ? 'empty' : value.observed_requests === 0 ? 'unknown' : value.observed_requests < value.requests ? 'partial' : 'observed' }
@@ -201,5 +234,5 @@ function selectUpstream(key:string){applied.value={...applied.value,upstream:key
 function selectAccount(id:number){applied.value={...applied.value,account_id:id,dimension:'model',page:1};draft.value={...applied.value};void load()}
 function overview(){applied.value={...applied.value,upstream:'',account_id:0,dimension:'upstream',page:1};draft.value={...applied.value};void load()}
 onMounted(load)
-onBeforeUnmount(()=>{alive=false;request++;controller?.abort()})
+onBeforeUnmount(()=>{alive=false;request++;editorRequest++;controller?.abort();editingAccount.value=null;configuringAccount.value=null})
 </script>

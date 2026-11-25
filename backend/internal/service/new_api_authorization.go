@@ -64,6 +64,8 @@ type NewAPIPreviewAccount struct {
 	TokenID      *int64              `json:"token_id,omitempty"`
 	Group        string              `json:"group,omitempty"`
 	Rate         *float64            `json:"rate,omitempty"`
+	PublicRate   *float64            `json:"public_rate,omitempty"`
+	RateSource   string              `json:"rate_source"`
 	Error        string              `json:"error,omitempty"`
 	TokenOptions []NewAPITokenOption `json:"token_options"`
 }
@@ -259,8 +261,13 @@ func (s *UpstreamBillingProbeService) verifyNewAPIConfig(ctx context.Context, id
 				tID := token.ID
 				item.TokenID = &tID
 				item.Group = sanitizeUpstreamBalanceText(token.Group, 128)
+				item.RateSource = "unconfirmed"
+				if r, ok := data.publicRatios[token.Group]; ok {
+					item.PublicRate = &r
+				}
 				if r, ok := newAPIFixedGroupRate(*token, data); ok {
 					item.Rate = &r
+					item.RateSource = "user_groups"
 				}
 				bindings = append(bindings, NewAPIBindingSave{Account: a, TokenID: token.ID, Group: token.Group})
 			}

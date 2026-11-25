@@ -68,6 +68,7 @@ func TestNewAPIWalletAndUserContextAndMaskMatching(t *testing.T) {
 			require.False(t, strings.EqualFold(key, "Cookie"))
 		}
 	}}
+	h.bodies["GET /tenant/api/user/self/groups"] = `{"success":true,"data":{"vip":{"ratio":0.5}}}`
 	s := newUpstreamBillingProbeTestService(nil, h, nil)
 	result, e := s.fetchNewAPI(context.Background(), a, "https://example.com/tenant", 7, "user-secret")
 	require.NoError(t, e)
@@ -115,6 +116,8 @@ func TestNewAPISnapshotRequiresFixedMatchingGroup(t *testing.T) {
 		admitted bool
 	}{
 		{"legacy fixed group", `{"group":"vip"}`, 0.5, true},
+		{"conflicting billing boundary", `{"group":"vip","billing_group_id":"other"}`, 0.5, false},
+		{"matching billing boundary", `{"group":"vip","billing_group_id":"vip"}`, 0.5, true},
 		{"explicit matching route", `{"group":"vip","route_groups":["vip"]}`, 0.5, true},
 		{"different single route", `{"group":"vip","route_groups":["default"]}`, 0.5, false},
 		{"auto route", `{"group":"vip","route_groups":["auto"]}`, 0.5, false},
@@ -203,9 +206,9 @@ func TestNewAPIPricingFailureCompatibility(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, 2.5, data.wallet)
-				require.Empty(t, data.ratios, "fallback must not invent a valid group rate")
+				require.Equal(t, 0.5, data.ratios["vip"], "authenticated personal group price remains independent from an unsupported public catalog")
 				require.Len(t, data.tokens, 1)
-				require.Len(t, requests, 4)
+				require.Len(t, requests, 5)
 			}
 		})
 	}
@@ -215,4 +218,89 @@ func TestNewAPICostSyncRejectsGroupScopeEvenWithoutProvider(t *testing.T) {
 	snap := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK, LastAttemptAt: time.Now(), Data: map[string]any{"billing_scope": "group", "resolved_rate_multiplier": 0.5, "effective_rate_multiplier": 0.5, "peak_rate_enabled": false}}
 	_, ok := snap.CostMultiplierToSync()
 	require.False(t, ok)
+}
+
+func TestNewAPIPersonalGroupQuoteDoesNotTrustPublicPricing(t *testing.T) {
+	for _, tc := range []struct {
+		name, groups string
+		want         *float64
+	}{
+		{"personal discount", `{"success":true,"data":{"vip":{"ratio":0.08,"desc":"private"}}}`, probeFloat(0.08)},
+		{"confirmed free", `{"success":true,"data":{"vip":{"ratio":0}}}`, probeFloat(0)},
+		{"missing groups endpoint", ``, nil},
+		{"missing group", `{"success":true,"data":{"other":{"ratio":0.02}}}`, nil},
+		{"null ratio", `{"success":true,"data":{"vip":{"ratio":null}}}`, nil},
+		{"string ratio", `{"success":true,"data":{"vip":{"ratio":"0.08"}}}`, nil},
+		{"duplicate selected group", `{"success":true,"data":{"vip":{"ratio":0.08},"vip":{"ratio":0.01}}}`, nil},
+		{"duplicate ratio", `{"success":true,"data":{"vip":{"ratio":0.08,"ratio":0.01}}}`, nil},
+		{"negative ratio", `{"success":true,"data":{"vip":{"ratio":-1}}}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, upstream, accounts := newAPIConfigFixture()
+			upstream.bodies["GET /api/pricing"] = `{"success":true,"group_ratio":{"vip":0.2}}`
+			delete(upstream.bodies, "GET /api/user/self/groups")
+			if tc.groups != "" {
+				upstream.bodies["GET /api/user/self/groups"] = tc.groups
+			}
+			d, err := s.fetchNewAPI(t.Context(), accounts.accounts[1], "https://example.com", 7, "fixture-secret")
+			require.NoError(t, err)
+			snap := newAPISnapshot(d.tokens[0], d, 30, time.Now())
+			require.Equal(t, 0.2, snap.Data["public_group_rate_multiplier"])
+			require.Equal(t, "ok", snap.Balance.Status)
+			if tc.want == nil {
+				require.Equal(t, "unsupported", snap.Status)
+				require.NotContains(t, snap.Data, "resolved_rate_multiplier")
+				require.Equal(t, "unconfirmed", snap.Data["group_rate_source"])
+			} else {
+				require.Equal(t, "ok", snap.Status)
+				require.Equal(t, *tc.want, snap.Data["resolved_rate_multiplier"])
+				require.Equal(t, "user_groups", snap.Data["group_rate_source"])
+			}
+		})
+	}
+}
+
+func probeFloat(value float64) *float64 { return &value }
+
+func TestNewAPIPersonalGroupsAliasWaitAndRecovery(t *testing.T) {
+	s, _, upstream, accounts := newAPIConfigFixture()
+	delete(upstream.bodies, "GET /api/user/self/groups")
+	upstream.bodies["GET /api/user/groups"] = `{"success":true,"data":{"vip":{"ratio":0.08}}}`
+	data, err := s.fetchNewAPI(t.Context(), accounts.accounts[1], "https://example.com", 7, "fixture-secret")
+	require.NoError(t, err)
+	require.Equal(t, 0.08, data.ratios["vip"])
+	for _, path := range []string{"GET /api/user/self/groups", "GET /api/user/groups"} {
+		t.Run(path, func(t *testing.T) {
+			upstream.statusCodes = map[string]int{path: 429}
+			var requests []string
+			upstream.check = func(req *http.Request) { requests = append(requests, req.Method+" "+req.URL.Path) }
+			data, err := s.fetchNewAPI(t.Context(), accounts.accounts[1], "https://example.com", 7, "fixture-secret")
+			require.Error(t, err)
+			require.Nil(t, data)
+			require.NotContains(t, requests, "GET /api/token/")
+			require.Equal(t, path, requests[len(requests)-1])
+			upstream.statusCodes = nil
+			upstream.check = nil
+			data, err = s.fetchNewAPI(t.Context(), accounts.accounts[1], "https://example.com", 7, "fixture-secret")
+			require.NoError(t, err)
+			require.Equal(t, 0.08, data.ratios["vip"])
+		})
+	}
+}
+
+func TestNewAPILegacyPublicQuoteDoesNotRetainPriceEligibility(t *testing.T) {
+	now := time.Now().UTC()
+	body := newAPIPricingApplicabilityFixture(t, now)
+	data := map[string]any{"provider": "new_api", "object": "new_api.group_billing", "billing_scope": "group", "resolved_rate_multiplier": 0.5, "peak_rate_enabled": false}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	applyNewAPIBillingApplicability(data, raw, "vip", 0.5, now)
+	_, ok := upstreamBillingRateAt(data, now)
+	require.False(t, ok, "legacy source-less group snapshots must not regain strict eligibility")
+	data["group_rate_source"] = "unconfirmed"
+	_, ok = upstreamBillingRateAt(data, now)
+	require.False(t, ok)
+	data["group_rate_source"] = "user_groups"
+	_, ok = upstreamBillingRateAt(data, now)
+	require.True(t, ok)
 }

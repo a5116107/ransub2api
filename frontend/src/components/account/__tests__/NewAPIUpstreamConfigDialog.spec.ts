@@ -49,23 +49,34 @@ beforeEach(() => {
 afterEach(() => { wrappers.forEach(wrapper => wrapper.unmount()); wrappers = [] })
 
 describe('New API shared authorization dialog', () => {
+  it('separates a confirmed personal rate from a differing public quote and marks old source-less rates unknown', async () => {
+    api.preview.mockResolvedValue({ ...preview, accounts: [{...preview.accounts[0], group:'vip',rate:.08,public_rate:.2,rate_source:'user_groups'}] })
+    const w=await open();await w.get('[data-testid="new-api-preview"]').trigger('click');await flushPromises()
+    expect(w.get('[data-testid="new-api-personal-rate"]').text()).toContain('personalRatio:0.08')
+    expect(w.get('[data-testid="new-api-public-rate"]').text()).toContain('publicRatio:0.2')
+    api.preview.mockResolvedValue({ ...preview, accounts: [{...preview.accounts[0],group:'vip',rate:.02,public_rate:0}] })
+    await w.get('[data-testid="new-api-preview"]').trigger('click');await flushPromises()
+    expect(w.get('[data-testid="new-api-personal-rate"]').text()).toContain('personalUnconfirmed')
+    expect(w.get('[data-testid="new-api-public-rate"]').text()).toContain('publicRatio:0')
+  })
+
   it.each([
     { name: 'missing', rate: undefined, known: false },
     { name: 'null', rate: null, known: false },
     { name: 'explicit zero', rate: 0, known: true },
     { name: 'numeric', rate: 0.03, known: true }
   ])('keeps $name group rates distinct from unknown', async ({ rate, known }) => {
-    api.preview.mockResolvedValue({ ...preview, accounts: [{ ...preview.accounts[0], group: 'vip', rate }] })
+    api.preview.mockResolvedValue({ ...preview, accounts: [{ ...preview.accounts[0], group: 'vip', rate, rate_source: 'user_groups' }] })
     const wrapper = await open()
     await wrapper.get('[data-testid="new-api-preview"]').trigger('click')
     await flushPromises()
     const result = wrapper.get('[data-testid="new-api-result-7"]').text()
     if (known) {
-      expect(result).toContain(`admin.accounts.upstreamBilling.newAPI.ratio:${rate}`)
-      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.noFixedRatio')
+      expect(result).toContain(`admin.accounts.upstreamBilling.newAPI.personalRatio:${rate}`)
+      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.personalUnconfirmed')
     } else {
-      expect(result).toContain('admin.accounts.upstreamBilling.newAPI.noFixedRatio')
-      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.ratio:0')
+      expect(result).toContain('admin.accounts.upstreamBilling.newAPI.personalUnconfirmed')
+      expect(result).not.toContain('admin.accounts.upstreamBilling.newAPI.personalRatio:0')
     }
   })
 
@@ -101,7 +112,7 @@ describe('New API shared authorization dialog', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="new-api-wallet"]').text()).toContain('$12.34 USD')
     expect(wrapper.get('[data-testid="new-api-result-7"]').text()).toContain('auto')
-    expect(wrapper.get('[data-testid="new-api-result-7"]').text()).toContain('admin.accounts.upstreamBilling.newAPI.noFixedRatio')
+    expect(wrapper.get('[data-testid="new-api-result-7"]').text()).toContain('admin.accounts.upstreamBilling.newAPI.personalUnconfirmed')
     const select = wrapper.get('[data-testid="new-api-token-8"]')
     expect(select.findAll('option')).toHaveLength(3)
     await select.setValue('103')

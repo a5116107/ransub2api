@@ -40,6 +40,7 @@ type UpstreamOperationsSnapshot struct {
 	Errors      ChannelOperationsSection `json:"errors"`
 	RawCache    ChannelOperationsSection `json:"raw_cache"`
 	Attempts    ChannelOperationsSection `json:"attempts"`
+	ModelTests  ChannelOperationsSection `json:"model_tests"`
 }
 
 type UpstreamOperationsRepository interface {

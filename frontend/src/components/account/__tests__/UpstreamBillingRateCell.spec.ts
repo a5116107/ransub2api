@@ -59,6 +59,16 @@ const billingData = {
 }
 
 describe('UpstreamBillingRateCell', () => {
+  it('does not display old source-less New API prices as confirmed and keeps read-only projections free of probe actions', () => {
+    const w=mount(UpstreamBillingRateCell,{props:{account:makeAccount({extra:{upstream_billing_probe:{status:'ok',received_at:new Date(Date.now()-1000).toISOString(),fresh_until:new Date(Date.now()+60000).toISOString(),last_attempt_at:'',next_probe_at:'',data:{...billingData,provider:'new_api',object:'new_api.group_billing',billing_scope:'group',public_group_rate_multiplier:0}}}}),now:Date.now(),readOnly:true}})
+    expect(w.get('[data-testid="upstream-price-source"]').text()).toContain('personalUnconfirmed')
+    expect(w.get('[data-testid="upstream-billing-rate"]').text()).not.toContain('0.90x')
+    expect(w.get('[data-testid="upstream-public-quote"]').text()).toContain('publicRatio')
+    expect(w.find('[data-testid="upstream-billing-probe"]').exists()).toBe(false)
+    expect(w.find('[data-testid="upstream-billing-configure"]').exists()).toBe(false)
+    w.unmount()
+  })
+
   it('shows local budget deferral without changing or refreshing the last supplier evidence', () => {
     const account = makeAccount({ extra: { upstream_billing_probe_deferral: { reason: 'recovery_reserve', scope: 'global_minute', retry_at: '2026-07-13T01:00:00Z' },
       upstream_billing_probe: { status: 'ok', last_attempt_at: '2026-07-13T00:00:00Z', received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-13T00:30:00Z', next_probe_at: '2026-07-13T00:15:00Z', data: billingData } } })
@@ -199,7 +209,7 @@ describe('UpstreamBillingRateCell', () => {
   it('shows New API rates and wallets like other accounts while retaining configuration and tooltip context', async () => {
     const wrapper = mount(UpstreamBillingRateCell, { props: {
       account: makeAccount({ extra: { upstream_billing_provider: 'new_api', upstream_billing_probe: {
-        status: 'ok', data: { ...billingData, provider: 'new_api', object: 'new_api.group_billing', billing_scope: 'group', peak_rate_enabled: false },
+        status: 'ok', data: { ...billingData, provider: 'new_api', object: 'new_api.group_billing', billing_scope: 'group', group_rate_source: 'user_groups', peak_rate_enabled: false },
         received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-14T00:00:00Z',
         last_attempt_at: '', next_probe_at: '', balance: {
           status: 'ok', received_at: '2026-07-13T00:00:00Z', fresh_until: '2026-07-14T00:00:00Z', last_attempt_at: '',
@@ -215,7 +225,9 @@ describe('UpstreamBillingRateCell', () => {
     regularAccount.extra.upstream_billing_probe.data.object = 'sub2api.key_billing'
     regularAccount.extra.upstream_billing_probe.data.billing_scope = 'token'
     const regular = mount(UpstreamBillingRateCell, { props: { account: regularAccount, now: Date.now() } })
-    expect(wrapper.text()).toBe(regular.text())
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe(regular.get('[data-testid="upstream-billing-rate"]').text())
+    expect(wrapper.get('[data-testid="upstream-price-source"]').text()).toContain('personalSource')
+    expect(regular.find('[data-testid="upstream-price-source"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="upstream-billing-configure"]').text()).toBe('0.60x')
     await wrapper.get('[data-testid="upstream-billing-configure"]').trigger('click')
     expect(wrapper.emitted('configure')).toHaveLength(1)

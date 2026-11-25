@@ -80,6 +80,29 @@ describe('upstream channel definition', () => {
 })
 
 
+describe('upstream line pagination', () => {
+ it('keeps idle line pages reachable without expanding aggregate diagnostics', async () => {
+  vi.mocked(readOperations).mockResolvedValue({ scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], member_total: 45, total: 0, catalog_total: 1, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} } as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  const next=w.get('[data-testid="operations-next"]')
+  expect(next.element.closest('details')).toBeNull()
+  expect(next.attributes('disabled')).toBeUndefined()
+  expect(w.get('[data-testid="operations-previous"]').attributes('disabled')).toBeDefined()
+  await next.trigger('click');await flushPromises()
+  expect(readOperations).toHaveBeenLastCalledWith(expect.objectContaining({page:2}),expect.anything())
+  expect(w.get('[data-testid="operations-previous"]').attributes('disabled')).toBeUndefined()
+  await w.get('[data-testid="operations-previous"]').trigger('click');await flushPromises()
+  expect(readOperations).toHaveBeenLastCalledWith(expect.objectContaining({page:1}),expect.anything())
+  w.unmount()
+ })
+ it('disables the next page when all account and diagnostic lists are exhausted', async () => {
+  vi.mocked(readOperations).mockResolvedValue({ scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], member_total: 0, total: 0, catalog_total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} } as unknown as OperationsSnapshot)
+  const w=mount(UpstreamChannelOperationsView);await flushPromises()
+  expect(w.get('[data-testid="operations-next"]').attributes('disabled')).toBeDefined()
+  w.unmount()
+ })
+})
+
 describe('upstream raw cache monitoring', () => {
  const base = { scope: {}, usage: { summary: {}, rows: [], accounts: [], members: [], total: 0, catalog: [] }, quality: {status:'unsupported_scope'}, errors:{status:'query_failed'} }
  const summary = { requests:4, observed_requests:2, unknown_requests:2,unattributed_requests:1,hit_requests:1,input_tokens:1000,read_tokens:100,coverage:0.5,request_hit_rate:0.5,token_read_rate:0.1,latest_sample_at:'2026-11-15T00:00:00Z' }

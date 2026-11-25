@@ -1208,6 +1208,8 @@ export interface UpstreamBillingData {
   schema_version: 1 | 2
   billing_scope: 'token' | 'group'
   provider?: 'new_api'
+  group_rate_source?: 'user_groups' | 'unconfirmed'
+  public_group_rate_multiplier?: number
   group?: string
   token_id?: number
   group_rate_multiplier?: number
@@ -1320,6 +1322,8 @@ export interface NewAPIUpstreamPreview {
     token_id?: number
     group?: string
     rate?: number
+    public_rate?: number
+    rate_source?: 'user_groups' | 'unconfirmed'
     error?: string
     token_options: Array<{ token_id: number; name: string; group: string; masked_key: string }>
   }>

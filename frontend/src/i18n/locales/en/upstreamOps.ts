@@ -1,4 +1,16 @@
 export default {
+  lines: {
+    deleted: 'Deleted · historical observations only',
+    pagination: 'Lines and observations pagination', page: 'Page {page} · {total} lines in this scope',
+    title: 'Upstream lines', scope: 'Attribution follows current account configuration. Tests and usage retain their own model and observation time; scheduling is not model certification.',
+    participation: 'Participation on this page', all: 'All lines', on: 'Scheduling enabled', off: 'Scheduling disabled', empty: 'No matching lines on this page. Change the filter or page; sources are not expanded automatically.', notCertified: 'Verify eligibility dimensions separately',
+    purchaseRate: 'Rate the upstream sells to us', localRates: 'Local admission U {admission} / estimate C {estimate}', answerAndIdentity: 'Answer quality / model identity', noQuality: 'No definite quality conclusion in this scope', identityUnknown: 'Identity and answer correctness require separate evidence. Missing is not passing.',
+    cacheAndWait: 'Token cache utilization / wait', noComparable: 'No comparable samples in this scope', firstText: 'Mean first text', cacheScope: 'Observed rows per model/tier, not whole-key cache rate. Drill down for additional rows.', activity: 'Business observations / capacity', usageRows: '{count} usage records', completionUnknown: 'Usage records lack a complete failure denominator; no completion rate is inferred.', capacity: 'Configured concurrency {count}, not currently available slots.',
+    tests: 'Model tests', testPlans: 'Test plans and history', pelican: 'Pelican test', modelNotRecorded: 'Tested model not recorded', generated: 'Generated · not identity verified', executionFailed: 'Execution failed · not an incorrect answer', deferred: 'Test deferred · not quality failure', finalAccount: 'Final account #{id}', priorAttempt: 'Earlier failed attempt #{id}',
+    historicalArtwork: 'Historical artwork does not override the latest run or prove current identity or availability', retryArtwork: 'Reload artwork (no new test)', artworkTitle: 'Historical Pelican output and tested model', testScopeUnknown: 'Model tests were not read or do not support this scope. Other models are not borrowed.', noTests: 'No tested-model records attributable to this account in this window; group success is not awarded to every member.', otherTestsUnknown: 'Independent connectivity, fingerprint and targeted cache conclusions are not collected by this query. Business statistics above do not replace those tests.', testsCoverage: 'Test combinations for accounts on this page: {shown} / {total}; capped, not whole-site coverage.',
+    stickyScope: 'Current configuration and historical observations are distinct. Existing affinity, pricing and manual protections remain.', details: 'View line evidence', priceEdit: 'Prices and manual entry', priceAuthorization: 'Automatic query authorization', aggregateDetails: 'Expand aggregate comparison and original diagnostics'
+  },
+
   sharedMonitoring: {
     stateUnknown: 'Saved state has not been reverified. Previous mode, revision and plan conclusions are withdrawn. Reload first; the draft is preserved and the previous write is not replayed.',
     issuesTitle: '{count} saved plans need review',

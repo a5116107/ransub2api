@@ -112,3 +112,70 @@ func TestUpstreamOperationsIdleAccountsDiscoveredWithoutAnyModelChannel(t *testi
 	require.Equal(t, id, data.Members[0].ID)
 	require.Equal(t, 1, data.MemberTotal)
 }
+
+func TestUpstreamOperationsLineCardsPriceAndFrozenPelicanModels(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err := integrationDB.Exec(`UPDATE accounts SET type='apikey',rate_multiplier=0.2,credentials='{"api_key":"fixture-must-not-leak","base_url":"https://line.example/v1"}',extra='{"cost_multiplier":0.08,"upstream_billing_probe":{"status":"unsupported","data":{"provider":"new_api","object":"new_api.group_billing","billing_scope":"group","group_rate_source":"unconfirmed","public_group_rate_multiplier":0.1,"api_key":"must-not-leak","raw_body":"must-not-leak"}}}' WHERE id=$1`, f.account)
+	require.NoError(t, err)
+	repo := NewPelicanGroupTestRepository(integrationDB)
+	plan, err := repo.CreatePlan(t.Context(), newPelicanGroupTestPlan(f.group, true, now.Add(time.Hour)))
+	require.NoError(t, err)
+	cfg := &service.PelicanTestConfig{ModelID: "frozen-model", ReasoningEffort: "low"}
+	old, err := repo.CreateResult(t.Context(), &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: f.account, Status: "success", ResponseText: "<svg>fixture-body-do-not-return</svg>", PelicanConfig: cfg, StartedAt: now.Add(-20 * time.Minute), FinishedAt: now.Add(-19 * time.Minute)})
+	require.NoError(t, err)
+	latest, err := repo.CreateResult(t.Context(), &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: f.account, Status: "failed", ErrorMessage: "fixture-error-do-not-return", Attempts: []service.PelicanGroupTestAttempt{{AccountID: f.outsider, Error: "fixture-attempt-do-not-return"}}, PelicanConfig: cfg, StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-9 * time.Minute)})
+	require.NoError(t, err)
+	_, err = repo.CreateResult(t.Context(), &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: f.outsider, Status: "success", ResponseText: "<svg>outsider</svg>", PelicanConfig: cfg, StartedAt: now.Add(-5 * time.Minute), FinishedAt: now.Add(-4 * time.Minute)})
+	require.NoError(t, err)
+	_, err = repo.CreateResult(t.Context(), &service.PelicanGroupTestResult{PlanID: plan.ID, AccountID: f.account, Status: "success", ResponseText: "<svg>legacy</svg>", StartedAt: now.Add(-3 * time.Minute), FinishedAt: now.Add(-2 * time.Minute)})
+	require.NoError(t, err)
+	_, err = integrationDB.Exec(`UPDATE pelican_group_test_plans SET model_id='changed-plan-model' WHERE id=$1`, plan.ID)
+	require.NoError(t, err)
+	q := service.UpstreamOperationsFilter{From: now.Add(-time.Hour), Until: now, AccountID: f.account, GroupID: f.group, Model: "frozen-model", ModelScope: "public", Dimension: "account", Sort: "name", Direction: "asc", Page: 1, PageSize: 20}
+	out, err := f.repo.ReadUpstreamOperations(t.Context(), q)
+	require.NoError(t, err)
+	require.Equal(t, "ready", out.ModelTests.Status, string(out.ModelTests.Data))
+	var tests struct {
+		Rows []struct {
+			ID, AccountID int64
+			Model         string
+			Status        string
+			Artwork       struct{ ID int64 } `json:"artwork"`
+		} `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal(out.ModelTests.Data, &tests))
+	require.Len(t, tests.Rows, 1)
+	require.Equal(t, latest.ID, tests.Rows[0].ID)
+	require.Equal(t, "failed", tests.Rows[0].Status)
+	require.Equal(t, "frozen-model", tests.Rows[0].Model)
+	require.Equal(t, old.ID, tests.Rows[0].Artwork.ID)
+	for _, secret := range []string{"fixture-body-do-not-return", "fixture-error-do-not-return", "fixture-attempt-do-not-return", "changed-plan-model"} {
+		require.NotContains(t, string(out.ModelTests.Data), secret)
+	}
+	require.NotContains(t, string(out.Usage), "must-not-leak")
+	var usage struct {
+		Members []struct {
+			Rate    float64 `json:"rate_multiplier"`
+			Cost    float64 `json:"cost_multiplier"`
+			Metrics struct {
+				Requests int64 `json:"requests"`
+			}
+			Billing json.RawMessage `json:"billing_probe"`
+		} `json:"members"`
+	}
+	require.NoError(t, json.Unmarshal(out.Usage, &usage))
+	require.Len(t, usage.Members, 1)
+	require.Equal(t, 0.2, usage.Members[0].Rate)
+	require.Equal(t, 0.08, usage.Members[0].Cost)
+	require.Contains(t, string(usage.Members[0].Billing), "public_group_rate_multiplier")
+	q.ModelScope = "upstream"
+	out, err = f.repo.ReadUpstreamOperations(t.Context(), q)
+	require.NoError(t, err)
+	require.Equal(t, "unsupported_scope", out.ModelTests.Status)
+	q.ModelScope = "public"
+	q.Model = "changed-plan-model"
+	out, err = f.repo.ReadUpstreamOperations(t.Context(), q)
+	require.NoError(t, err)
+	require.Contains(t, string(out.ModelTests.Data), `"total": 0`)
+}
