@@ -286,7 +286,9 @@ func issue600Finish(t *testing.T, h *openAIWSPassthroughHandlerHarness, headers 
 	_ = h.clientConn.CloseNow()
 	select {
 	case <-h.handlerDone:
-	case <-time.After(5 * time.Second):
+	// Passthrough may drain usage for 1.2s, then coder/websocket allows a
+	// five-second upstream close handshake. The fixture must bound both.
+	case <-time.After(8 * time.Second):
 		t.Fatal("handler did not release connection")
 	}
 	select {
