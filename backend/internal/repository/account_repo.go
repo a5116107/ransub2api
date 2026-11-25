@@ -969,7 +969,7 @@ func lockAndMergeAccountProbeExtra(
 	// Isolation is server-owned. A normal save must use the latest value read
 	// under this row lock, including absence after a legitimate restoration.
 	// Never revive, erase or replace it from a client/service snapshot.
-	for _, key := range []string{service.OAuthDegradationActionExtraKey, service.QualityModelIsolationKey, service.OAuth429ModelBlocksKey} {
+	for _, key := range []string{service.OAuthDegradationActionExtraKey, service.QualityModelIsolationKey} {
 		delete(extra, key)
 		if state, exists := currentExtra[key]; exists {
 			if extra == nil {
@@ -1436,7 +1436,7 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 
 // accountStatusFilterPredicate 把列表的 status 筛选换成查询条件。质量运维等场景
 // 需要一次筛多个状态（如「正常+限流中」），因此支持逗号分隔的多个值，任一命中即可；
-// 单个值的行为与原先完全一致。
+// 单个值与组合值共用同一状态口径。
 func accountStatusFilterPredicate(status string) dbpredicate.Account {
 	var predicates []dbpredicate.Account
 	for _, value := range strings.Split(status, ",") {
@@ -1454,8 +1454,8 @@ func accountStatusFilterPredicate(status string) dbpredicate.Account {
 }
 
 // accountStatusPredicate 是单个状态值的查询条件。除数据库里的真实状态外，还有几个
-// 派生状态：正常 = active 且可调度且不在限流/临时不可调度中；限流中 / 临时不可调度 /
-// 不可调度分别取对应的一段。
+// 派生状态：正常 = active 且可调度且不在限流/临时不可调度中；限流中仅取未来的
+// 限流截止时间，与列表标记一致，允许和错误、禁用或临时不可调度状态重叠。
 func accountStatusPredicate(status string) dbpredicate.Account {
 	notTempUnschedulable := dbpredicate.Account(func(s *entsql.Selector) {
 		col := s.C("temp_unschedulable_until")
@@ -1476,11 +1476,7 @@ func accountStatusPredicate(status string) dbpredicate.Account {
 			notTempUnschedulable,
 		)
 	case "rate_limited":
-		return dbaccount.And(
-			dbaccount.StatusEQ(service.StatusActive),
-			dbaccount.RateLimitResetAtGT(time.Now()),
-			notTempUnschedulable,
-		)
+		return dbaccount.RateLimitResetAtGT(time.Now())
 	case "temp_unschedulable":
 		return dbaccount.And(
 			dbaccount.StatusEQ(service.StatusActive),
@@ -2455,7 +2451,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	if scoped := r.accountTransactionScope(ctx); scoped != r {
 		return scoped.BindGroups(ctx, accountID, groupIDs)
 	}
-	if adminaccess.FromContext(ctx) != nil {
+	if adminaccess.RestrictedFromContext(ctx) != nil {
 		return r.scopedAdminBindGroups(ctx, accountID, groupIDs)
 	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
@@ -3362,7 +3358,7 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
 	// Scoped writes already hold the account row in their caller-owned transaction.
 	// Cancel pending timers in that same transaction, without opening Store.Manual's
 	// independent transaction or changing ordinary account-edit semantics.
-	if principal := adminaccess.FromContext(ctx); principal != nil {
+	if principal := adminaccess.RestrictedFromContext(ctx); principal != nil {
 		if dbent.TxFromContext(ctx) == nil || principal.CreatorID <= 0 {
 			return errors.New("scoped schedulable write requires an authenticated transaction")
 		}
@@ -3746,7 +3742,6 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	// Only ordinary bulk saves reject this input; runtime UpdateExtra remains
 	// available to the dedicated isolation owner.
 	delete(updates.Extra, service.QualityModelIsolationKey)
-	delete(updates.Extra, service.OAuth429ModelBlocksKey)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)

@@ -1122,7 +1122,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	}
 	providerImport := req.ProviderID != 0 || req.ProviderKeyID != ""
 	if providerImport {
-		if _, observer := service.ObserverGroupIDs(c.Request.Context()); observer || adminaccess.FromContext(c.Request.Context()) != nil {
+		if _, observer := service.ObserverGroupIDs(c.Request.Context()); observer || adminaccess.RestrictedFromContext(c.Request.Context()) != nil {
 			response.Forbidden(c, "Provider imports require an unrestricted administrator")
 			return
 		}
@@ -2399,6 +2399,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			skipCheck := item.ConfirmMixedChannelRisk != nil && *item.ConfirmMixedChannelRisk
 
 			account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
+				OAuthImportSource:     service.OAuthImportJSON,
 				Name:                  item.Name,
 				Notes:                 item.Notes,
 				Platform:              item.Platform,
