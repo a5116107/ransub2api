@@ -156,7 +156,7 @@ def sync(dry_run=False, bootstrap_tracking=False):
                        '--head', head, '--state', 'open', '--json', 'number,url')
     if existing:
         github('PATCH', f'repos/{REPOSITORY}/pulls/{existing[0]["number"]}', {'title': title, 'body': body})
-        result['pull_request'] = existing[0]['html_url']
+        result['pull_request'] = existing[0]['url']
     else:
         request = github('POST', f'repos/{REPOSITORY}/pulls', {'title': title, 'body': body, 'base': BASE, 'head': head})
         result['pull_request'] = request['html_url']

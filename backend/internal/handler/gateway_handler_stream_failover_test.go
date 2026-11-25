@@ -41,6 +41,21 @@ func TestGatewaySharedKeyAdmissionFailureRemainsLocal503(t *testing.T) {
 	}
 }
 
+func TestAnthropicModelNotFoundFailoverExhausted(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	failure := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusNotFound,
+		Reason:       "anthropic_model_unavailable",
+		ResponseBody: []byte(`{"error":{"code":"model_not_found","message":"private provider details"}}`),
+	}
+	(&GatewayHandler{}).handleFailoverExhausted(c, failure, service.PlatformAnthropic, false)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"model_not_found"`)
+	require.NotContains(t, rec.Body.String(), "private provider details")
+}
+
 // TestStreamWrittenGuard_MessagesPath_AbortFailoverOnSSEContentWritten 验证：
 // 当 Forward 在返回 UpstreamFailoverError 前已向客户端写入 SSE 内容时，
 // 故障转移保护逻辑必须终止循环并发送 SSE 错误事件，而不是进行下一次 Forward。
