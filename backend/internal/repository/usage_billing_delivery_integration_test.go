@@ -130,3 +130,103 @@ func TestUsageBillingDeliveryArchiveClaimNeverBackChargesHistory(t *testing.T) {
 	require.Equal(t, "100.00000000", balance)
 	require.Zero(t, logs, "no fabricated historical canonical usage")
 }
+
+func TestApplyUsageSettlesOnceWithoutStaging(t *testing.T) {
+	ctx := context.Background()
+	repo, cmd, usage, _ := durableBillingFixture(t)
+	first, err := repo.ApplyUsage(ctx, &cmd, &usage)
+	require.NoError(t, err)
+	require.True(t, first.Settled && first.Result.Applied)
+	usage.ActualCost = 77
+	replay, err := repo.ApplyUsage(ctx, &cmd, &usage)
+	require.NoError(t, err)
+	require.True(t, replay.Settled)
+	require.False(t, replay.Result.Applied)
+	require.Equal(t, first.Event.Usage.ActualCost, replay.Event.Usage.ActualCost)
+	var events int
+	require.NoError(t, repo.db.QueryRowContext(ctx, "SELECT count(*) FROM usage_billing_events WHERE request_id=$1", cmd.RequestID).Scan(&events))
+	require.Zero(t, events)
+}
+
+func TestApplyUsageConcurrentWritersAndLegacyRecovery(t *testing.T) {
+	ctx := t.Context()
+	repo, cmd, usage, _ := durableBillingFixture(t)
+	// An existing pre-upgrade pending event may race a new direct settlement.
+	require.NoError(t, repo.StageUsageBilling(ctx, &cmd, &usage))
+	start := make(chan struct{})
+	type outcome struct {
+		result *service.UsageBillingRecovery
+		err    error
+	}
+	results := make(chan outcome, 4)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			c, u := cmd, usage
+			result, err := (&usageBillingRepository{db: repo.db}).ApplyUsage(ctx, &c, &u)
+			results <- outcome{result, err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	applied := 0
+	for result := range results {
+		require.NoError(t, result.err)
+		require.NotNil(t, result.result)
+		require.True(t, result.result.Settled)
+		if result.result.Result.Applied {
+			applied++
+		}
+	}
+	require.Equal(t, 1, applied)
+	recovered, err := repo.ApplyStagedUsageBilling(ctx, service.UsageBillingEventKey{RequestID: cmd.RequestID, APIKeyID: cmd.APIKeyID})
+	require.NoError(t, err)
+	require.False(t, recovered.Result.Applied)
+	var balance string
+	var logs int
+	require.NoError(t, repo.db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
+	require.NoError(t, repo.db.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&logs))
+	require.Equal(t, "99.00000000", balance)
+	require.Equal(t, 1, logs)
+}
+
+func TestApplyUsageCanonicalInsertFailureRollsBackMoney(t *testing.T) {
+	ctx := t.Context()
+	repo, cmd, usage, _ := durableBillingFixture(t)
+	db := repo.db
+	name := "billing_fail_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF NEW.request_id='%s' THEN RAISE EXCEPTION 'injected canonical failure'; END IF; RETURN NEW; END; $$;
+ CREATE TRIGGER %s BEFORE INSERT ON usage_logs FOR EACH ROW EXECUTE FUNCTION %s()`, name, cmd.RequestID, name, name))
+	require.NoError(t, err)
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := db.ExecContext(cleanupCtx, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON usage_logs; DROP FUNCTION IF EXISTS %s()", name, name))
+		require.NoError(t, err)
+	}
+	t.Cleanup(cleanup)
+	_, err = repo.ApplyUsage(ctx, &cmd, &usage)
+	require.Error(t, err)
+	var balance string
+	var claims int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM usage_billing_dedup WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&claims))
+	require.Equal(t, "100.00000000", balance)
+	require.Zero(t, claims)
+	cleanup()
+	recovered, err := repo.ApplyUsage(ctx, &cmd, &usage)
+	require.NoError(t, err)
+	require.True(t, recovered.Settled && recovered.Result.Applied)
+	changed := cmd
+	changed.BalanceCost = 2
+	changed.RequestFingerprint = ""
+	_, err = repo.ApplyUsage(ctx, &changed, &usage)
+	require.ErrorIs(t, err, service.ErrUsageBillingRequestConflict)
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
+	require.Equal(t, "99.00000000", balance)
+}

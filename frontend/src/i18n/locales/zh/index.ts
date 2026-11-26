@@ -17,7 +17,6 @@ import upstreamOps from './upstreamOps'
 import channelOps from './channelOps'
 import ipAudit from './ipAudit'
 import usageApi from './usageApi'
-import connections from './connections'
 import securityRecords from './securityRecords'
 import siwc from './siwc'
 import priorityScheduling from './priorityScheduling'
@@ -62,7 +61,6 @@ export default {
   upstreamEntities,
   usageApi,
   ipAudit,
-  connections,
   securityRecords,
   siwc,
   autoConfig,

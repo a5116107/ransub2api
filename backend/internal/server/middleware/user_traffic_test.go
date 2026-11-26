@@ -160,7 +160,7 @@ func TestTrafficCountsPartialWritesAndFlushErrors(t *testing.T) {
 	require.Len(t, recorder.events, 1)
 	require.EqualValues(t, 2, recorder.events[0].DownloadBytes)
 	require.Equal(t, "write_error", recorder.events[0].Outcome)
-	flushRecorder := &timingFlushErrorRecorder{ResponseRecorder: httptest.NewRecorder(), err: errors.New("flush failed")}
+	flushRecorder := &trafficFlushErrorRecorder{ResponseRecorder: httptest.NewRecorder(), err: errors.New("flush failed")}
 	r = gin.New()
 	r.Use(UserTraffic(recorder), trafficTestAuth)
 	r.POST("/v1/messages", func(c *gin.Context) { c.Writer.Flush() })
@@ -293,4 +293,17 @@ func TestTrafficAuxiliaryQueueCannotDelayGatewayResponse(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 5, health.QueueDroppedEvents)
 	require.Equal(t, health.QueueCapacity, health.QueuedEvents)
+}
+
+type trafficFlushErrorRecorder struct {
+	*httptest.ResponseRecorder
+	err error
+}
+
+func (w *trafficFlushErrorRecorder) FlushError() error { return w.err }
+
+func TestTrafficEndpointBoundsUTF8(t *testing.T) {
+	require.Equal(t, "/v1/responses", trafficEndpoint("/v1/responses"))
+	require.Equal(t, strings.Repeat("a", 255), trafficEndpoint(strings.Repeat("a", 255)+"中"))
+	require.Equal(t, "/valid", trafficEndpoint("/valid\xff"))
 }

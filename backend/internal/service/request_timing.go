@@ -5,32 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/gin-gonic/gin"
 )
 
 const maxSSETimingBytes = 16 * 1024 * 1024
-
-func newOpenAIWSTurnTiming(account *Account, start time.Time) *requesttiming.WSTurnCapture {
-	proxyID := int64(0)
-	if account.ProxyID != nil {
-		proxyID = *account.ProxyID
-	}
-	return requesttiming.NewWSTurn(start, account.ID, proxyID, AccountRouteFingerprint(account))
-}
-
-func finishOpenAIWSTurnTiming(capture *requesttiming.WSTurnCapture, ctx context.Context, result *OpenAIForwardResult, err error) {
-	if capture == nil {
-		return
-	}
-	disconnected := result != nil && result.ClientDisconnect
-	if result != nil {
-		result.requestTiming = capture.Collector
-	}
-	capture.Finish(err, ctx != nil && ctx.Err() != nil, disconnected)
-}
 
 func startAccountTimingAttempt(request *http.Request, account *Account) (*http.Request, *requesttiming.Trace) {
 	proxyID := int64(0)
@@ -179,17 +159,4 @@ func timingTerminal(event string) string {
 		return "incomplete"
 	}
 	return ""
-}
-
-// Optional repository capability avoids changing billing's existing contract.
-func (s *UsageService) RequestTimings(ctx context.Context, id int64) ([]json.RawMessage, error) {
-	if _, err := s.GetByID(ctx, id); err != nil {
-		return nil, err
-	}
-	if repo, ok := s.usageRepo.(interface {
-		RequestTimings(context.Context, int64) ([]json.RawMessage, error)
-	}); ok {
-		return repo.RequestTimings(ctx, id)
-	}
-	return []json.RawMessage{}, nil
 }

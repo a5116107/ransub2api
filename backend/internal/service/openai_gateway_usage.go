@@ -15,7 +15,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"go.uber.org/zap"
 )
@@ -163,7 +162,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	ctx = requesttiming.WithUsageTurn(ctx, result.requestTiming)
 	if result.RegionalMetered {
 		return nil
 	}
@@ -583,8 +581,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if !s.DurableUsageBillingEnabled() {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
-	} else {
-		recordDurableUsageTiming(ctx, s.usageLogRepo, usageLog)
 	}
 
 	return nil
