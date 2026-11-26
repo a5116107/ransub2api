@@ -129,6 +129,8 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 		cfg.QualityRestoreDiagnostic = nil
 		cfg.AvailabilityResult = nil
 		cfg.ToolCallResult = nil
+		cfg.QualityHTTPStatus = 0
+		cfg.Quality429Streak = 0
 		cfg.QualityModelOutcomes = nil
 		cfg.QualityModelActions = nil
 		cfg.RandomQuestion = nil

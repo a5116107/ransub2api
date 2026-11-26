@@ -451,6 +451,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
 ), history_rows AS (
  SELECT r.*,v.round_complete,v.all_passed,v.expected_count,
  row_number() OVER round_window AS row_in_round,
+ max(CASE r.pelican_config->>'quality_429_streak' WHEN '3' THEN 3 WHEN '2' THEN 2 WHEN '1' THEN 1 ELSE 0 END) OVER round_window AS rate_limit_streak,
  count(*) FILTER (WHERE r.status='success') OVER round_window AS passed_count,
  count(*) FILTER (WHERE r.status='skipped') OVER round_window AS skipped_count,
  GREATEST(count(*) OVER round_window,COALESCE(v.expected_count,0)) AS total_count,
@@ -465,7 +466,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
  CASE WHEN any_wrong THEN 'answer_mismatch' ELSE error_message END,
  latency_ms,round_started_at,round_finished_at,created_at,
  `+qualityHistoryConfig+`,
- quality_action,quality_judgment,account_id,account_name,passed_count,total_count-skipped_count,skipped_count,result_ids,round_complete,expected_count
+ quality_action,quality_judgment,account_id,account_name,passed_count,total_count-skipped_count,skipped_count,result_ids,round_complete,expected_count,rate_limit_streak
  FROM history_rows WHERE row_in_round=1 ORDER BY id DESC`, beforeID, limit)
 	if err != nil {
 		return nil, err
@@ -475,7 +476,7 @@ func (r *scheduledTestResultRepository) ListQualityHistory(ctx context.Context, 
 	for rows.Next() {
 		item := &service.QualityHistoryResult{}
 		var cfg, judgment []byte
-		if err := rows.Scan(&item.ID, &item.PlanID, &item.Status, &item.ErrorMessage, &item.LatencyMs, &item.StartedAt, &item.FinishedAt, &item.CreatedAt, &cfg, &item.QualityAction, &judgment, &item.AccountID, &item.AccountName, &item.PassedCount, &item.TotalCount, &item.SkippedCount, pq.Array(&item.ResultIDs), &item.RoundComplete, &item.ExpectedCount); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlanID, &item.Status, &item.ErrorMessage, &item.LatencyMs, &item.StartedAt, &item.FinishedAt, &item.CreatedAt, &cfg, &item.QualityAction, &judgment, &item.AccountID, &item.AccountName, &item.PassedCount, &item.TotalCount, &item.SkippedCount, pq.Array(&item.ResultIDs), &item.RoundComplete, &item.ExpectedCount, &item.Quality429Streak); err != nil {
 			return nil, err
 		}
 		if len(cfg) > 0 {

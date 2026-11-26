@@ -45,7 +45,12 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 		result, err := s.runOpenAICodexStateProbeScheduled(ctx, accountID, model, cfg)
 		if result != nil {
 			snapshot := *cfg
-			snapshot.ModelID = model
+			if result.PelicanConfig != nil {
+				snapshot = *result.PelicanConfig
+			}
+			if snapshot.ModelID == "" {
+				snapshot.ModelID = model
+			}
 			snapshot.AvailabilityResult = &AvailabilityProbeResult{Version: 1, Status: "inconclusive", Reason: "state_probe_not_connectivity", StartedAt: result.StartedAt, FinishedAt: result.FinishedAt}
 			result.PelicanConfig = &snapshot
 		}
@@ -109,6 +114,10 @@ func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID
 	finished := time.Now()
 	snapshot := *cfg
 	snapshot.Ciallo = ciallo
+	snapshot.QualityHTTPStatus, snapshot.Quality429Streak = 0, 0
+	if cfg.Quality != nil && status == "failed" && ctx.Err() == nil {
+		snapshot.QualityHTTPStatus = c.GetInt("quality_terminal_http_status")
+	}
 	snapshot.ModelID = model
 	snapshot.AvailabilityResult = availability
 	snapshot.ActualPrompt = intelligenceTestPrompt(cfg)
@@ -269,6 +278,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 				cfg := *plan.PelicanConfig
 				samplePlan.ModelID = models[index%len(models)]
 				cfg.ModelID = samplePlan.ModelID
+				cfg.QualityHTTPStatus, cfg.Quality429Streak = 0, 0
 				if randomSamples != nil {
 					cfg = *randomSamples[index/len(models)]
 					cfg.ModelID = samplePlan.ModelID
@@ -296,7 +306,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 					continue
 				}
 				result := s.runPelicanSample(runCtx, &samplePlan)
-				if plan.PelicanConfig.Quality != nil && !coverageOnly && qualityModelUnsupported(result.ErrorMessage) {
+				if plan.PelicanConfig.Quality != nil && !coverageOnly && result.PelicanConfig != nil && result.PelicanConfig.QualityHTTPStatus != http.StatusTooManyRequests && qualityModelUnsupported(result.ErrorMessage) {
 					unsupported.Store(samplePlan.ModelID, true)
 					persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(runCtx), 3*time.Second)
 					persistErr := s.scheduledSvc.rememberUnsupportedQualityModel(persistCtx, plan.AccountID, samplePlan.ModelID)
@@ -363,6 +373,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		plan.QualityModelOutcomes = qualityPlanModelOutcomes(plan, results)
 	}
 	qualityAction := ""
+	roundSaved := false
 	if plan.PelicanConfig.Quality != nil && !coverageOnly {
 		qualityAction = "inconclusive"
 		freshSignal := true
@@ -371,7 +382,17 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 		}
 		if applyTriggeredQuality && freshSignal && (qualityRoundHasResults(results) || plan.PelicanConfig.Quality.Action == QualityActionOpenAITwoFAAdmission) {
 			var actionErr error
-			qualityAction, actionErr = s.planRepo.ApplyQualityOutcome(saveCtx, plan, until, qualityRoundOutcome(results))
+			outcome := qualityRoundOutcome(results)
+			if store, ok := s.planRepo.(Quality429Repository); ok && len(Quality429Models(plan, results)) > 0 {
+				qualityAction, actionErr = store.SaveQuality429Round(saveCtx, plan, until, results, outcome)
+				if actionErr != nil {
+					logger.LegacyPrintf("service.scheduled_test_runner", "quality plan=%d save rate-limit round failed: %v", plan.ID, actionErr)
+					return false
+				}
+				roundSaved = true
+			} else {
+				qualityAction, actionErr = s.planRepo.ApplyQualityOutcome(saveCtx, plan, until, outcome)
+			}
 			if actionErr != nil {
 				qualityAction = "action_error"
 				logger.LegacyPrintf("service.scheduled_test_runner", "quality plan=%d action failed: %v", plan.ID, actionErr)
@@ -386,6 +407,9 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	succeeded := false
 	allSaved := true
 	for _, result := range results {
+		if roundSaved {
+			continue
+		}
 		result.QualityAction = qualityAction
 		if coverageOnly {
 			// Quality history and operations statistics select snapshots containing

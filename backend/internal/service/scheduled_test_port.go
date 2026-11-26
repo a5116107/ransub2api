@@ -12,6 +12,9 @@ type PelicanTestConfig struct {
 	ToolCallResult      *ToolCallProbeResult `json:"tool_call_result,omitempty"`
 	Availability        *AvailabilityPolicy  `json:"availability,omitempty"`
 	Ciallo              *CialloEvidence      `json:"ciallo,omitempty"`
+	// Result-only evidence from the terminal answer request and the round classifier.
+	QualityHTTPStatus int `json:"quality_http_status,omitempty"`
+	Quality429Streak  int `json:"quality_429_streak,omitempty"`
 	// Optional display name stored in the existing configuration JSON.
 	RuleName string `json:"rule_name,omitempty"`
 	// Filled only on saved result snapshots, never used to configure a rule.
@@ -151,6 +154,7 @@ type ScheduledTestResultRepository interface {
 }
 
 type QualityHistoryResult struct {
+	Quality429Streak int `json:"quality_429_streak,omitempty"`
 	PelicanHistoryResult
 	RoundComplete bool    `json:"round_complete"`
 	ExpectedCount *int    `json:"expected_count"`

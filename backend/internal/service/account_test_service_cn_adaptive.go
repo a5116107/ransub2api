@@ -105,7 +105,7 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, errMsg)
+		return s.sendHTTPErrorAndEnd(c, resp.StatusCode, errMsg)
 	}
 
 	if err := s.processClaudeStream(c, resp.Body); err != nil {
@@ -155,7 +155,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, errMsg)
+		return s.sendHTTPErrorAndEnd(c, resp.StatusCode, errMsg)
 	}
 
 	if err := s.processOpenAIStream(accountTestResponseContext(c, resp), resp.Body); err != nil {
@@ -245,7 +245,7 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && s.accountRepo != nil {
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, errMsg)
+		return s.sendHTTPErrorAndEnd(c, resp.StatusCode, errMsg)
 	}
 
 	return s.processClaudeStream(accountTestResponseContext(c, resp), resp.Body)

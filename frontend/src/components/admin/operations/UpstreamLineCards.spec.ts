@@ -127,3 +127,12 @@ describe('actual upstream line panel', () => {
   w.unmount()
  })
 })
+
+it('shows the accepted HTTP 429 policy reason without rewriting it as an incorrect answer', () => {
+ const s = fixture()
+ s.quality.data!.rows = [{ account_id: 9, id: 12, plan_id: 3, measured_model: 'tested-model', observed_at: '2026-11-25T09:00:00Z', probes: 1, passed_probes: 0, expected: 1, outcome: 'degraded', round_complete: true, round_probes: 1, round_expected: 1, quality_429_streak: 3 }]
+ const w = render(s)
+ expect(w.get('[data-testid="quality-rate-limit-policy"]').text()).toContain('qualityOps.rateLimitDegraded')
+ expect(w.get('[data-testid="quality-round-identity"]').text()).toContain('channelOps.evidence.identityUnknown')
+ w.unmount()
+})

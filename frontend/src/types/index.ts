@@ -2909,6 +2909,8 @@ export interface PelicanQuestion {
 export interface PelicanTestConfig {
   tool_call_token_budget?: number
   tool_call_result?: ToolCallProbeResult
+  quality_http_status?: number
+  quality_429_streak?: number
   prompt_mode?: 'custom' | 'random'
   pelican_question?: PelicanQuestion
   actual_prompt?: string
