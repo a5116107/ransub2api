@@ -2736,3 +2736,10 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终公网ui-only退出0/passed=true：真实16账号、逐账号timer/performance、原流量/守护与工单禁用边界、中英1440/390、精确按生效账号ID过滤、账号9下钻、账号编辑名称预填、授权表单和password输入类型、失败隐藏旧卡与恢复、普通导航/键盘刷新及UTF8中点通过。原导览在语言重载后出现并拦截点击，保存失败结果；通过其普通关闭按钮完成后复测，不注入/隐藏DOM伪造成功。无pageerror/HTTP错误/配置写入、无付费检测。作品16945按原管理员接口读出，实际打开既有沙箱预览且无allow-same-origin；截图已目视核对，显示被测gpt-6.1-sol/low/历史作品，不把生成成功说成模型身份验真。
 - 证据沿既有`H:/Root/DevCache/evidence/sub2api-quality-evidence`：upstream-overview-public-smoke-ui.json、原.1业务upstream-overview-public-smoke.json、production-{rehearse,deploy,verify,cleanup}.log、中英双宽截图与artwork.png。保存locator/guide失败而不删除；包/证据/缓存与临时产物分开。最终.2候选及cutover-fields再次dry-run核0引用后删除171143599B，本轮累计逻辑513373182B；未清回滚、历史数据或其他项目。
 - D7.2与R1.1各自明确范围完成，原28项20done/8部分不借子项改计数。当前稳定线已集成官方Latest v2.25.3，自动供应池仍保留开发分支；D2/D4外部关联/模型fast契约、D3其他能力/插件计量、D5/D6可信缓存域/净收益、D7解释、D8全能力混版和D9旧Mac/BPS长流仍开放。轮换凭据文件仅查元数据仍不存在，未读聊天token/未导入生产。
+
+
+### 2026-11-27：最终源码同步与运行只读核验
+
+- 文档提交独立于应用源；本地production和自有production/integration稳定线正常快进对齐，应用backend/frontend/deploy对正式v2.25.3-ransub.2零差异。唯一工作树保持，无新分支/worktree、未提交实现或新增债务标记。开发供应池分支与官方原仓库未被覆盖，活动PR列表为空。
+- 最后技能默认SSH会话报Timeout opening channel；复用本轮一直使用的已存原生SSH配置与严格主机校验立即成功，不重启服务或更换凭据。2026-11-27 00:01 HKT实际程序仍2.25.3-ransub.2/463bf7a00，六个应用/依赖容器healthy，无预演容器；根盘实际可用6198501376字节。临时文件逻辑清理量与实时可用空间分开，不把保留备份或镜像层大小当作释放量。
+- 最终发布run45851981440 success，仅publish-prebuilt-image成功，其余七作业skipped；Release自动化active，官方Latest仍v2.25.3，自有Latest v2.25.3-ransub.2。30个活动文档本地链接与STATE字节/行/检查点契约通过；原失败及受保护历史scratch保留，不再尝试绕行清理。
