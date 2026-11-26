@@ -1,4 +1,17 @@
 export default {
+  "evidence": {
+    "historical": "Historical functional test result",
+    "roundCoverage": "Round sample coverage",
+    "unknown": "Unknown",
+    "identityUnknown": "Model identity unverified",
+    "details": "View evidence and scope",
+    "probes": "This model: passed / measured (expected)",
+    "observedAt": "Sample recorded at",
+    "ageAtRead": "Sample age at read time",
+    "seconds": "{count} seconds",
+    "validityUnknown": "Historical outcomes do not grant current admission. This record provides no current route, policy revision or expiry. Current admission uses independent monitoring.",
+    "identityNote": "This API provides no numeric model fingerprint or independent reference baseline. A functional pass does not verify model identity. Round coverage describes saved configured samples, not coverage of every capability."
+  },
   "title": "Channel operations",
   "description": "Manage channels, upstream labels and accounts; inspect persisted latency and measured quality.",
   "scope": "Upstream labels classify operations without changing routing, groups, credentials, scheduling or billing. Historical usage is regrouped by current membership; it does not identify upstream routing at request time. Reassignment never modifies usage history. No automatic paid probes.",

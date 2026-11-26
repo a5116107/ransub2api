@@ -599,6 +599,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/admin/qqbot/runtime', redirect: '/admin/qqbot/records' },
   { path: '/admin/qqbot/checkin', redirect: { path: '/admin/qqbot/activities', query: { tab: 'checkin' } } },
   { path: '/admin/qqbot/lottery', redirect: { path: '/admin/qqbot/activities', query: { tab: 'lottery' } } },
+  { path: '/admin/upstream-overview', name: 'AdminUpstreamOverview', component: () => import('@/views/admin/UpstreamChannelOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'upstreamOps.overviewTitle' } },
   { path: '/admin/channel-config', name: 'AdminChannelConfig', component: () => import('@/views/admin/ChannelConfigView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'channelConfig.title' } },
   { path: '/admin/channel-operations', redirect: to => ({ path: '/admin/channel-config', query: { ...to.query, panel: 'channels' }, hash: to.hash }), meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/admin/upstream-channels', redirect: to => ({ path: '/admin/channel-config', query: { ...to.query, panel: 'channels' }, hash: to.hash }), meta: { requiresAuth: true, requiresAdmin: true } },

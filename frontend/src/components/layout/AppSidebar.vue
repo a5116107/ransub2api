@@ -892,6 +892,7 @@ const adminNavItems = computed((): NavItem[] => {
       { path: '/admin/auto-config', label: t('autoConfig.title'), icon: AccountOpsIcon, noticeId: NEW_FEATURE_NOTICES.oauthInitialModelSelection },
       { path: '/admin/priority-scheduling', label: t('priorityScheduling.title'), icon: AccountOpsIcon },
       { path: '/admin/qqbot/overview', label: t('qqbot.title'), icon: AccountOpsIcon, noticeId: NEW_FEATURE_NOTICES.qqCommunity },
+      { path: '/admin/upstream-overview', label: t('upstreamOps.overviewTitle'), icon: SignalIcon },
       { path: '/admin/channel-config', label: t('channelConfig.title'), icon: PriceTagIcon, noticeId: NEW_FEATURE_NOTICES.channelConfig },
       { path: '/admin/account-quality', label: t('qualityOps.title'), icon: QualityOpsIcon, noticeId: NEW_FEATURE_NOTICES.qualityRetestRest },
       { path: '/admin/controlled-experiments', label: t('controlledExperiments.title'), icon: QualityOpsIcon },

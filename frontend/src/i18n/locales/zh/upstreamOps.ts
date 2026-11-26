@@ -1,4 +1,21 @@
 export default {
+  "overviewTitle": "上游总览",
+  lines: {
+    availability: {
+      title: '最新可用状态', scope: '读取当前规则的最新决定，与上方历史窗口独立；只证明所列请求范围，不是模型身份或完整产品资格。', unread: '当前状态未读取或模型口径不适用，不沿用历史通过。', empty: '本页账号没有对应模型的可用状态规则。',
+      pass: '当前通过', fail: '当前失败', unknown: '待确认', expired: '已过期', paused: '规则暂停', observed: '最近观测', decision: '最近决定', until: '有效至', capped: '当前页规则/模型读取已达上限，未读部分不表示通过；请下钻账号或缩小模型范围。',
+      reasons: { latest_decision: '原状态权威已核对当前规则、线路与故障版本', rule_paused: '规则已暂停，历史通过不继续放行', expired: '决定已到期，重新读取不等于重新检测', not_observed: '尚无对应模型观测', rule_changed: '规则已变更，旧结果失效', route_changed: '账号线路或凭据已变更，旧结果失效', new_fault_event: '已有新的业务故障，等待复核', connection_not_selected: '尚未选择授权连接，不借其他连接结论', connection_not_observed: '该授权连接尚无观测', evidence_version_missing: '历史证据缺少所需版本', invalid_evidence: '证据格式或时间边界待核对', unknown: '范围或证据未完整确认' }
+    },
+    deleted: '已删除 · 仅历史观测',
+    pagination: '线路与观测分页', page: '第 {page} 页 · 当前范围 {total} 条线路',
+    title: '上游线路', scope: '按当前账号配置归属，测试与用量各自保留模型及测量时间。调度开启不等于模型已验真。',
+    participation: '当前页参与状态', all: '全部线路', on: '调度开启', off: '调度关闭', empty: '当前页没有匹配线路；切换筛选或分页，不自动扩大来源。', notCertified: '完整资格需分别核对',
+    purchaseRate: '上游售给我的倍率', localRates: '本地准入 U {admission} / 估算 C {estimate}', answerAndIdentity: '答题质量 / 模型身份', noQuality: '当前范围暂无明确质量结论', identityUnknown: '模型身份与答题正确分别核验，未测不补绿。',
+    cacheAndWait: 'Token缓存利用 / 等待', noComparable: '暂无当前范围可比样本', firstText: '首文本均值', cacheScope: '当前稳定线尚无独立上游原始缓存样本；不借下游计费值、不把缺失显示为0%。', activity: '业务观测 / 容量', usageRows: '{count} 条用量记录', completionUnknown: '用量记录没有完整失败分母，不据此算请求完成率。', capacity: '配置并发 {count}，不是实时可用槽位。',
+    tests: '模型测试', testPlans: '检测计划与历史', pelican: '鹈鹕测试', modelNotRecorded: '被测模型未记录', generated: '已生成 · 非验真通过', executionFailed: '执行失败 · 非模型答错', deferred: '检测延期 · 非质量失败', finalAccount: '最终归属账号 #{id}', priorAttempt: '前序失败尝试 #{id}',
+    historicalArtwork: '历史作品 · 不覆盖最近执行结果，不证明当前模型身份或可用性', retryArtwork: '重新读取作品（不重新测试）', artworkTitle: '鹈鹕历史作品与测试模型', testScopeUnknown: '本范围模型测试未读取或口径不适用；不借其他模型结果。', noTests: '本窗口无归属本账号的被测模型记录；不把分组成功授予全部账号。', otherTestsUnknown: '最新可用状态单独核对；模型指纹和定向缓存的独立结论仍未由本查询采集，业务统计不替代这些测试。', testsCoverage: '本页账号的模型测试组合：展示 {shown} / {total}；有数量上限，不代表全站覆盖。',
+    stickyScope: '当前配置和历史观测分开；原会话粘性、价格及人工保护保持。', details: '查看线路依据', priceEdit: '价格与手动填写', priceAuthorization: '自动查询授权', aggregateDetails: '展开聚合对照与原诊断数据'
+  },
   "currentMembers": "当前账号归属",
   "memberNote": "当前配置成员独立分页，包括窗口内没有请求的账号；可下钻模型。这里只展示配置归属，不声明历史真实去向或模型支持状态。",
   "capacity": "当前配置容量",

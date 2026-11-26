@@ -94,6 +94,7 @@
         :disabled="probing"
         :aria-label="t('admin.accounts.upstreamBilling.manualProbe')"
         :title="t('admin.accounts.upstreamBilling.manualProbe')"
+        v-if="!readOnly"
         data-testid="upstream-billing-probe"
         @click="$emit('probe')"
       >
@@ -197,6 +198,7 @@ const props = withDefaults(defineProps<{
   now: number
   probing?: boolean
   globalProbeEnabled?: boolean
+  readOnly?: boolean
   canConfigure?: boolean
 }>(), {
   globalProbeEnabled: true,

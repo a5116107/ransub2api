@@ -706,3 +706,11 @@ describe('UpstreamBillingRateCell', () => {
     expect(value().text()).toBe('admin.accounts.upstreamBilling.stale')
   })
 })
+
+it('keeps overview pricing read-only without leaving a paid probe action', () => {
+ const wrapper = mount(UpstreamBillingRateCell, { props: { account: makeAccount(), now: Date.now(), readOnly: true, canConfigure: false } })
+ expect(wrapper.find('[data-testid="upstream-billing-probe"]').exists()).toBe(false)
+ expect(wrapper.find('[data-testid="upstream-billing-configure"]').exists()).toBe(false)
+ expect(wrapper.find('[data-testid="upstream-billing-rate"]').exists()).toBe(true)
+ wrapper.unmount()
+})
