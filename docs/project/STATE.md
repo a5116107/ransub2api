@@ -4,7 +4,7 @@
 
 <!-- resume:start -->
 D3.2代码c0a968c5；service/UI55/类型lint/浏览器/Linux构建通过；.3已发行。
-授权：稳定线提交/同步/发行/部署；不CI、不新工作树。origin/production=e76658b5；.3 Latest（源c0a968c5）；v2.19.1远端tag已删、Release成Draft。
+授权：稳定线提交/同步/发行/部署；不CI、不新工作树。本地production与origin同步；.3 Latest（源c0a968c5）；v2.19.1远端tag已删、Release成Draft。
 生产仍.2；截图见auth/performance 503、timer/schedulable 500；15:04–15:07 HKT health 200/未登录401。
 health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在banner阶段EOF；生产日志、DB、加载SHA未取到，根因未定。
 解除条件：SSH可执行只读命令或控制台提供截图时段脱敏日志/DB状态；先取证再决定.3切换。D3.2生产验收开放。
@@ -24,7 +24,7 @@ health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在
 | 任务 | 状态 | 已验证范围 / 剩余验收 |
 | --- | --- | --- |
 | D1 | done | 原配置、倍率口径、共享Key缺口和补丁边界已记录 |
-| D2 | in_progress | D2.1–D2.4、多出站/持久交接、三节点及视频身份/双预算/原节点结算/竞争、336排空/跨库及原节点期限恢复已验；unknown待原请求关联契约 |
+| D2 | in_progress | D2.1–D2.4、共享Key/多出站/区域额度与视频账本已验；unknown待请求关联契约 |
 | D2.1 | done | 自动同步新鲜度、高峰值域与在线/预演同源，30类边界、完整回归和CLI验证通过 |
 | D2.2 | done | New API声明组与唯一完整路由同组；异组/多组拒绝和恢复、绑定保存、三轮回归及六包lint通过 |
 | D2.3 | done | 地址/协议/接入模式/模型规则统一线路身份；四路径旧证据失效、实际协议切换及9平台发送前拦截通过 |
@@ -47,27 +47,27 @@ health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在
 | M11 | done | 用户周期用量接入真实聚合，校验和缺依赖拒绝；回归/编译/vet通过 |
 | M12 | done | 代理/realtime固定零值及假成功已移除，未支持路由501；回归/vet通过 |
 | M13 | done | 重复GroupService.GetStats已删，引用0/handler race/编译/vet通过 |
-| D4 | in_progress | 固定售价、严格请求新鲜策略、7平台及BPS独立发送权威终检已验证；仍依赖D2、区域传播和模型/fast来源 |
-| D5 | in_progress | 协议/缓存/TPS/TTFT及入站/线路/effort隔离已验；选定延迟未知/null已验，service662/3193、四包lint0/vet/Linux通过；跨协议/会话估计待证据 |
-| D6 | in_progress | 普通保留/硬准入及门票16场景已验，扩大race668/3225、四包vet/lint0及Linux通过；软迁移仍须前缀/候选缓存域与净收益证据 |
-| D7.1 | done | 待对照结论分层：红4→绿184/类型lint0、中英双宽28、.2同源加载及公网UI已验；单样本真实结果保持 |
-| D7 | in_progress | 并发保存/409、重算及候选缺失/无效延迟已验；UI112+支付21、类型/lint/构建/中英390px刷新通过；完整解释待契约 |
+| D4 | in_progress | 倍率门、固定售价、7平台/BPS发送前终检已验；依赖D2/区域及模型fast来源 |
+| D5 | in_progress | 协议/缓存/TPS/TTFT与未知值隔离已验；跨协议和会话估计待证据 |
+| D6 | in_progress | 会话保留/硬准入已验；软迁移待可信前缀、缓存域及净收益证据 |
+| D7.1 | done | 中性对照状态、中英/UI与公网加载已验；单样本结论保留 |
+| D7 | in_progress | 并发保存/重算及UI构建/多语言已验；完整解释待契约 |
 | D8.1 | done | 后台重启复用SIGTERM；Linux红→三轮绿/完整13父子、vet/lint0及生产后台重启/同镜像重建已验 |
 | D8.2 | done | .1/.2管理并行/并发通过；旧.9丢cache_weight已实证并在验收中拒绝；84工具测试/清理通过，不冒充完整混版 |
-| D8 | in_progress | CLI/额度/统一性能、v2252副本432→497四阶段及11表指纹、生产排空/同镜像重建已验；完整并行混版等待 |
-| D9 | in_progress | .9 Goal/429换线、.2公网SSE唯一用量/UI/排空重建及120/300保持已验；旧Mac会话/BPS长流与完整供应池仍待 |
+| D8 | in_progress | CLI/额度/统一性能及副本排空重建已验；完整并行混版待验 |
+| D9 | in_progress | .2公网SSE唯一用量/UI/排空重建及120/300保持已验；旧Mac/BPS长流与供应池待验 |
 | R1 | done | 2.25.2-ransub.2/aeabbcbc46f7已发行上线；源码/制品/加载一致，副本回退及公网SSE/UI已验；开发在研保持 |
 
 ## 工作区与验证约定
 
-- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前production；origin为自有ransub2api，upstream为ranxi2001/sub2api且禁推。
-- 正式153包历史证据见DECISIONS；unit/integration并发1–2，沿用原规则；Redis竞争用5.0.14.1，历史失败不改报通过。
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前production；origin自有ransub2api，官方upstream禁推。
+- 正式测试/lint/vet及失败证据见DECISIONS；unit/integration并发1–2，Redis竞争用5.0.14.1，失败不改报通过。
 - 图片夹具隔离DATA_DIR；12张历史PNG已核生成哈希并删，9测试无泄漏。协议/区域/CLI的实际覆盖与复现命令见DECISIONS，不把本地夹具当真实供应商。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
 ## 下一项工作
 
-D3.2预构建发行；SSH恢复后完成生产日志/DB取证、灰度与业务复测。D2/D4及缓存契约仍待外部证据。
+SSH恢复后取生产日志/DB/加载SHA，按共同根因修复并灰度验收`.3`；D2/D4、缓存契约仍待外部证据。
 
 ## 外部等待与清理
 
@@ -81,4 +81,4 @@ D3.2预构建发行；SSH恢复后完成生产日志/DB取证、灰度与业务�
 - 历史拒删的候选/overlay/pyc/脚本路径与证据见DECISIONS；保留由拥有者处理，未重试或移动。
 - 历史拒删scratch（含stream-health/production-failover/release-build/stable-sync）见DECISIONS，拥有者处理，未重试。
 - 固定基线不限量lint0/vet0；完整历史失败保留，不称整仓全绿。
-- 管理通道待恢复：`srv-hk2` SSH直连/保存代理均未获banner；解除条件为SSH可用，或控制台提供对应时段脱敏日志/DB状态。
+- 生产SSH：`hk2` direct channel timeout、SOCKS5 banner EOF；需SSH只读命令可执行，或控制台提供截图时段脱敏日志/DB状态。
