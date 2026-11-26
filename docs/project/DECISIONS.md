@@ -2639,3 +2639,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终公网gpt-6.1-sol两轮200，每轮唯一response.completed。第一轮有完整function_call_arguments.delta/done，严格参数7和11；第二轮回填结果并得到18文本delta/完成。耗时2.844及2.734秒（含本机网络），上游usage分别输入147/输出22、输入186/输出5。client IDs 180af662-b369-42ab-ab06-f8497a94ca90和8fcc2bd0-9253-4a66-97c5-0be757aa014b，分别唯一关联usage135763/135764，均上游账号9、下游Key1；落库时序均200/success/completed，client_disconnect/downstream_error均false。成功后只读查账，不再发计费请求。
 - 真实生产仍2.25.2-ransub.2/aeabbcbc46f7/程序279415426b848c81218b16c70c76806d734c2f0af12a7fa09d8cd7bb3f920a84；APP894da3b1a062、PGf30095818cb1、Redis5b796d6478e0不变，16账号/2组/1用户/1Key/497迁移保持。两轮完整成功及同账号证明本次工具协议/亲和/唯一记账，不证明供应商智力、真实模型身份、缓存命中率、其他能力或长期SLA。
 - 本轮只变更.github/release-tools与文档，业务源码对v2.25.2-ransub.2零差异；不重复构建/发行/重启未变程序。Linux最终84个工具测试通过，原源码/命令及失败证据保留；不运行CI。原28项20done/8部分不变，D8.2和D3.1按各自限定验收完成，D3自动工具监测接入仍开放，D2/D4及缓存/旧长流等原父验收未被子结果替代。
+
+
+### 2026-11-26 D3.2：线上错误截图与发行/生产访问边界
+
+- 用户提供的管理后台截图包含重复`GET /api/v1/auth/me`与`POST /admin/accounts/performance`的503、多个`GET /admin/accounts/{id}/schedulable-timers`与`POST /admin/accounts/{id}/schedulable`的500，以及账号列表`ECONNABORTED`。这些故障时间相邻，但仅凭截图不能确认单一根因。
+- 本地源码确认`backend/internal/server/routes/common.go`的`/health`无条件返回`{"status":"ok"}`，仅证明进程路由可响应；未登录公网路由探测得到health=200、auth/me=401、admin路由=401，只证明当前进程/路由可达，不证明认证后数据库或Redis请求成功。
+- 定时器API在`backend/internal/handler/admin/accounttimerapi/handler.go`把非领域错误统一收敛为`500/TIMER_internal`；该响应隐藏原始错误，不足以判定缺表、连接池耗尽、锁等待或其他数据库故障。Performance的503也可能来自其仓储查询失败。未据猜测修改业务代码。
+- `srv-hk2` SSH已登记主机密钥路径下的原生直连未建立连接，保存代理路径未收到SSH banner，TCP端口探测为可达；服务器管理通道当前不可用。没有读取/改动远程数据，没有重启、迁移或部署。下游请求/服务日志、PostgreSQL连接/等待状态和`/proc/1/exe` SHA256均待服务器日志或管理通道恢复后核实。
+- 当前公开域名的只读探测为2026-11-26 15:04–15:07 HKT `/health`连续200，未登录auth/admin路由返回401。该窗口与截图请求故障是否相同时间未知；不可宣称用户流程恢复。
+- `.3`Linux amd64归档SHA256=`39c88ab2fff80986fa7ae52fa70cdf1c4265c645540f9608857a64059bfcc16f`，源提交`c0a968c58ab2a9813590e6e1d5c37bc7dfe404b4`；发行目录校验和匹配。自有production分支和注释tag已推送至该源；发行工具核验tag、源码、校验和后发布`v2.25.2-ransub.3`，GitHub四个资产digest复核通过，归档250MB，使用本地预构建发布、不触发CI。
+- 推送时`--follow-tags`额外推送了本地遗留的官方tag`v2.19.1`（指向官方2.19.1源码且无自有Release）；经用户明确授权后只删除了自有仓库该误推tag，并以`git ls-remote`确认不存在。没有改官方远端或删除其他标签。
+- `.3`已发行但生产仍.2。服务器未部署；不在SSH管理通道不可用且数据库健康未知时切换。生产SHA、日志/DB与管理工作流仍待SSH banner恢复或控制台提供脱敏证据；若日志确认依赖不可用，先修复并验证依赖再部署。
+- 生产错误复核的解除条件：SSH返回协议banner并可运行只读取证命令，或服务器控制台提供截图时间段的脱敏应用错误与PostgreSQL状态。届时按第一个共同失败依赖修根因；保留原镜像/程序/数据库备份及回滚材料。
