@@ -571,13 +571,16 @@ function date(value: string | null | undefined) { return value ? new Date(value)
 function clock(value: string | number | undefined) { return value ? new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—' }
 function day(value: string | undefined) { return value ? new Date(value).toLocaleDateString() : '—' }
 function running(plan: ScheduledTestPlan) { return !!plan.running_until && Date.parse(plan.running_until) > Date.now() }
+function comparisonPending(op: QualityOperation) {
+  return op.quality_action === 'comparison_pending' || op.pelican_config?.quality_batch?.decision === 'pending'
+}
 function allPassed(op: QualityOperation) {
-  return op.status === 'success' && op.round_complete !== false && Number.isSafeInteger(op.total_count) &&
+  return !comparisonPending(op) && op.status === 'success' && op.round_complete !== false && Number.isSafeInteger(op.total_count) &&
     Number.isSafeInteger(op.passed_count) && op.total_count > 0 && op.passed_count === op.total_count
 }
 function roundResult(op: QualityOperation) {
   const key = op.status === 'skipped' ? 'skipped' : op.round_complete === false ? 'roundIncomplete' :
-    allPassed(op) ? 'roundPassed' : op.quality_action === 'inconclusive' ? 'roundInconclusive' : 'roundNotPassed'
+    comparisonPending(op) ? 'outcomes.comparison_pending' : allPassed(op) ? 'roundPassed' : op.quality_action === 'inconclusive' ? 'roundInconclusive' : 'roundNotPassed'
   return { label: t(`qualityOps.${key}`),
     className: key === 'roundPassed' ? 'test-passed' : key === 'roundNotPassed' ? 'test-other' : 'test-neutral',
     icon: key === 'roundPassed' ? 'checkCircle' as const : key === 'roundNotPassed' ? 'exclamationCircle' as const : 'infoCircle' as const }

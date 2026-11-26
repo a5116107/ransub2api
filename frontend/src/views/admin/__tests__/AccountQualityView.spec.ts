@@ -1787,6 +1787,39 @@ describe('quality operations', () => {
     if (sample.neutral) expect(wrapper.get('.test-count').classes()).not.toContain('test-other')
     wrapper.unmount()
   })
+  it.each([
+    { name: 'all answers accepted before comparison', status: 'failed', action: 'comparison_pending', decision: 'pending', passed: 2 },
+    { name: 'legacy successful round while comparison is pending', status: 'success', action: 'comparison_pending', decision: undefined, passed: 2 },
+    { name: 'mixed answer results before comparison', status: 'failed', action: 'comparison_pending', decision: 'pending', passed: 1 },
+    { name: 'pending persisted evidence without the action field', status: 'success', action: undefined, decision: 'pending', passed: 2 },
+  ])('keeps $name neutral without hiding the individual answer result', async sample => {
+    const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: sample.status,
+      round_complete: true, passed_count: sample.passed, total_count: 2, error_message: '', quality_action: sample.action, result_ids: [103, 102],
+      pelican_config: { quality_batch: sample.decision ? { decision: sample.decision } : undefined, quality: { action: 'remove_groups', remove_group_ids: [21] } } }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [operation] as any, next_cursor: 0 })
+    vi.mocked(scheduledTests.getResult).mockResolvedValueOnce({ ...operation, id: 103, status: 'failed',
+      error_message: 'answer_mismatch', response_text: '41', quality_judgment: { verdict: 'incorrect', reason: 'Different answer' } } as any)
+    const wrapper = mountView(); await flushPromises(); const vm = wrapper.vm as any
+    expect(wrapper.get('.test-count').classes()).toContain('test-neutral')
+    expect(wrapper.text()).toContain('qualityOps.outcomes.comparison_pending')
+    expect(wrapper.text()).not.toContain('qualityOps.roundNotPassed')
+    expect(vm.allPassed(operation)).toBe(false)
+    await vm.operationDetails(operation); await flushPromises()
+    expect(wrapper.get('[data-testid="quality-round-overview"] strong').classes()).toContain('test-neutral')
+    expect(wrapper.get('[data-testid="quality-round-overview"]').text()).toContain('qualityOps.outcomes.comparison_pending')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').text()).toBe('qualityOps.wrongAnswer')
+    expect(wrapper.get('[data-testid="quality-result-badge"]').classes()).toContain('tone-danger')
+    vm.closeDetails()
+    const finalized = { ...operation, status: 'success', quality_action: 'passed', passed_count: 2,
+      pelican_config: { ...operation.pelican_config, quality_batch: { decision: 'passed' } } }
+    vi.mocked(listQualityOperations).mockResolvedValueOnce({ items: [finalized] as any, next_cursor: 0 })
+    await vm.load(); await flushPromises()
+    expect(vm.allPassed(finalized)).toBe(true)
+    expect(wrapper.get('.test-count').classes()).toContain('test-passed')
+    expect(wrapper.text()).toContain('qualityOps.roundPassed')
+    expect(wrapper.text()).not.toContain('qualityOps.outcomes.comparison_pending')
+    wrapper.unmount()
+  })
   it('keeps an ungraded round neutral in the list, overview and sample details', async () => {
     const operation = { id: 103, plan_id: 4, account_id: 1, account_name: 'Synthetic account', status: 'failed',
       round_complete: true, passed_count: 0, total_count: 1, error_message: 'judge_inconclusive', quality_action: 'inconclusive', result_ids: [103],

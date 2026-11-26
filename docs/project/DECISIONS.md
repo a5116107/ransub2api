@@ -2588,3 +2588,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 上线后只清理三份哈希明确且无容器挂载/进程exe或fd引用的candidate-a9a5fe1202dc.sub2api、candidate-4c557ba961c3.sub2api、candidate-523f082b5dcd.sub2api，位于原 /opt/sub2api/deploy/backups/ransub2api-2.25.0-ransub.1；预演0删除，正式ops.py cleanup退出0，实际删除3151069664逻辑bytes，rollback_preserved=true/health=ok。初次自编预演漏导入Path退出1、无删除；补齐原运维helper导入和引用检查后预演与执行通过。不把逻辑删除量当磁盘物理分配实测，也不删正式归档/运行镜像/旧版回退材料。
 - 本地复用 H:/Root/DevCache/tmp/sub2api-stable-sync/ops.py 与 public-smoke.py；该目录沿用历史宿主拒删边界，未换工具删除或移走，交宿主拥有者处理。交付/可重用包仍在 H:/Root/DevCache/releases/ransub2api/2.25.2-ransub.1；最小成功/原始失败证据在既有 H:/Root/DevCache/evidence/sub2api-production-flow-review/upstream-2252-*。不新增源码副本/工作树/台账，不删除共享依赖或历史拒删资源。
 - 状态与设计移除“生产仍.9、PR未合并、.7候选验证中”等过时现状；唯一H盘production只追加文档，不改变发行应用源码。原28项20done/8部分保持：串行稳定发布子验收已完成，完整混版、真实旧失败会话/已输出BPS长流、非文本范围、unknown关联/模型fast契约及供应商缓存存活/迁移净收益仍按原D2–D9验收和责任方保留。
+
+
+### 2026-11-26 D7.1：等待同题对照的结论分层修复
+
+- 延续全局任务与稳定线发布授权，限定修复现有质量运营页面，不提升在研自动供应池。原同题批次在 CollectQualityBatch 保存 comparison_pending，历史聚合可返回 failed 且 passed_count=total_count；它表示尚未完成对照，并非明确整轮失败。原 roundResult 只识别 inconclusive，待对照会落为红色未通过，某些旧响应又可落为绿色全部通过。
+- 先新增4个行为回归：全答案通过待比较、旧success但action待比较、混合成功/失败样本、只有持久批次pending证据。未改实现前实际4失败，分别复现test-other或test-passed；不将环境错误当红测。原位共用comparisonPending判断，使列表/详情及全部通过筛选统一，复用现有中英outcomes.comparison_pending，无平行组件/翻译。单条错误答案仍红色，刷新为已完成批次后恢复最终绿色。
+- 最终本地命令 pnpm exec vitest run src/views/admin/__tests__/AccountQualityView.spec.ts src/stores/__tests__/accountQuality.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts：3文件184通过/0失败/0跳过；vue-tsc -b和定向eslint --max-warnings 0退出0。继承的测试useRoute注入告警和Browserslist过期提示原样保留，不篡改跳过或屏蔽诊断。仅前端行为/测试与VERSION变化，无schema/调度/倍率/账号配置变更。
+- 候选版本2.25.2-ransub.2，生产仍.1；发行前临停Release，避免15分钟补偿触发重复编译。后续同源构建、预构建镜像、公网UI/更新持久性和唯一用量各自验收；本地通过不等于线上加载。原28项20done/8部分保持，D7.1单独跟踪子验收，不提前关闭D7父任务。
