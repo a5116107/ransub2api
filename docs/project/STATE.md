@@ -8,8 +8,8 @@ R1.2：v2.25.4=d8f00260f44b整合；唯一integration/upstream-stable，无新�
 已验：PG联合195/195、直接扣费race重复两轮通过；UI186/186，类型/定向eslint与Windows vet0。
 PR8无冲突；Linux vet/lint0、UI186/类型0。全unit发现误用Redis3；改Redis5重验，Release暂时停用。
 线上00:39 HKT仍.2/463bf7a00/加载67e330aebdf9、六容器健康，尚未发布或切换。
-下一：收全unit原handle；测试口径补丁后重建同源制品，诊断归档/副本回退重升、PR8/发行/上线。
-禁止备份/副本通过前生产删表；旧账退役脚本不执行。原28项20done/8部分不关闭。
+候选6e218ec22/verified已构建；副本498→499→498→499通过，诊断实际恢复/重退役、7资源回收。
+下一收Redis5全unit64959后合并PR8/发行/切换；Release待恢复。旧账退役不执行，原28项20done/8部分。
 原来源/缓存域/插件计量/旧客户端等待及受保护历史scratch保持；轮换凭据文件不存在。
 <!-- resume:end -->
 
@@ -60,7 +60,7 @@ PR8无冲突；Linux vet/lint0、UI186/类型0。全unit发现误用Redis3；改
 | D9 | in_progress | .1唯一SSE用量/管理/UI/在线更新/排空重建已验；旧Mac/BPS长流与供应池待验 |
 | R1 | done | .2/463bf7a00已发行上线，程序/镜像/管理/UI一致；复用未变后端SSE，开发线保持 |
 | R1.1 | done | PR7冲突/官方2.25.3/400迁移回退及.2发布/运行界面验收完成；原父项不关闭 |
-| R1.2 | in_progress | 新官方2.25.4/28冲突已解；采用诊断退役/先备份，流量等保留；扣费回归/演练/发布未验 |
+| R1.2 | in_progress | 28冲突/扣费/UI/PG及副本诊断恢复通过；16账号/11历史保持；全unit重验和正式发布待完成 |
 
 ## 工作区与验证约定
 
@@ -71,7 +71,7 @@ PR8无冲突；Linux vet/lint0、UI186/类型0。全unit发现误用Redis3；改
 
 ## 下一项工作
 
-R1.2：保留线上数据/自研，先解v2.25.4冲突并验证扣费与兼容；原外部证据验收保持。
+R1.2：收Redis5完整回归后合并PR8、同源发行/部署/公网结算验收；原外部证据验收保持。
 
 ## 外部等待与清理
 
@@ -83,6 +83,6 @@ R1.2：保留线上数据/自研，先解v2.25.4冲突并验证扣费与兼容�
 - `backend/tmp/availability-non5xx-regression`历史overlay曾拒删，导致根`go test ./...`误编译；正式源码目录153包通过，未改删该目录。
 - Windows完整repository缺`SeCreateSymbolicLinkPrivilege`，Linux同例已过；管理员提供权限后重跑，未改skip。
 - 历史拒删的候选/overlay/pyc/脚本路径与证据见DECISIONS；保留由拥有者处理，未重试或移动。
-- 旧dist/历史ops.pyc(19355B)及scratch受策略保护；路径见DECISIONS，由拥有者处理，不绕行。
+- 旧dist/pyc及首候选54247114B受策略保护；路径见DECISIONS，由拥有者处理，不绕行。
 - 历史验证/失败与清理证据见DECISIONS，不称整仓全绿。
 - 凭据导入等待轮换后本机`.codex/secrets/hudy-chatgpt.json`；2026-11-26只查元数据时不存在，未读聊天token。有效性通过后入group2。

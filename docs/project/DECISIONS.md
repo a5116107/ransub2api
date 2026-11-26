@@ -2758,3 +2758,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 扩大全unit初轮不是全绿：43153条pass、42skip、820fail事件（含父节点）；service只两叶因旧attributed_v1 fixture与官方强制legacy_forward不符，原位保留已知/未知/异测量/异分位断言、交换新旧测量样本。handler大量store_unavailable已核实测试PATH调用系统Redis3.0.504；复用既有H:/Root/tools/redis/5.0.14.1，仅作用于验证子进程，不改生产Lua。诊断后精确终止该轮handler.test.exe及其一个Redis子进程，保留原失败与终止记录；改Redis5完整重验，未将终止/跳过算成功。
 - 兼容Go1.27.4的六包增量lint首轮输出0 issues但超过8分钟，退出4；保留超时。相同真实规则/并发2增至15分钟并复用暖缓存后退出0/0 issues；Windows和Linux七包vet退出0。最终前端9文件186项、类型及全部变更路径eslint退出0；30个当前文档本地链接有效。元数据同步run45866470875成功、追踪1a81b1aa8并以零应用差异并入eb426a48f，PR8可合并无冲突。
 - 生产prepare退出0：原16账号/2组/1用户/1Key/498迁移保留，备份319353109字节/SHA db8f624b8eae642d50e65978e184a737ec2e51c88b3428a0a3b4b1fa3927f34c；未停服务/删表/改业务配置。本地首候选eb426a48f已真实构建退出0且临时前端自动回收；随后只修测试夹具，因此该未公开候选须在最终源码固定后原路径重建，不改写公开制品。正式Release workflow暂时停用避免合并触发云端源码编译，发布自有资产后须恢复；当前仍未发布/切换。
+
+- 验证补丁6e218ec22339227dc735053b5dfe1d77b97faea6已提交/推送；相对eb426仅测试/文档变化，业务实现零差异。退休测量四种状态定向通过（service1.507s），Redis5原存储失败代表范围service/handler通过（1.709s/16.036s）；全量纠正环境仍沿原handle，不提前报完成。
+- 首个未发布候选四文件共54247114逻辑字节的精确回收命令被宿主policy拒绝，整个组合命令未执行。未换工具、移动或重试删除；保留H:/Root/DevCache/releases/ransub2api/2.25.4-ransub.1下旧release-manifest.json、checksums.txt及input两文件。由于源码身份从eb426改为6e218，最终仅在该版本/verified建立对应新身份制品，不复用错误Commit标签、不把保留旧产物称为已释放。
+- 最终local-build退出0：verified归档54246366B/SHA15d76ae56d0a148e9bce7432a156e2255dd0f2c9cc7844c9f27a0f61549c6763，程序170909856B/SHAe85f3efc8765946aebe922c81a407d02047724182628b8c12b818a85f7c543b1；当前500MiB上限保持。两个成功构建的frontend-*均随context回收，最终只留归档/manifest/notes，无新源码工作树或依赖副本。仅导入到同版远端备份路径供隔离生产副本演练，尚未切换生产。主机未检出需停用的诊断collector unit。
+
+- 生产副本四阶段最终退出0/production_changed=false：.2基线498迁移→.4候选499→实际诊断数据恢复后.2回退498→再次.4退役499；每阶段核对/proc/1/exe实际SHA及原管理员/16账号/性能API，优先调度仍关闭。11张流量/预测/守护/工单历史摘要前后一致，未执行任何供应商探测。
+- 副本专项诊断归档216225536B/SHA d7d0fbbd9daff8834f8eae4a04cbd02dd222f300735dceba5fc94220f0598cc0，耗时139234行/连接150386行；恢复schema+data后行数/内容摘要一致，只有400_drop_request_diagnostics.sql迁移状态撤销，再升后同checksum重新执行。diagnostic_rollback_restored和diagnostic_reupgrade_retired均true；原账务/11历史表和其余迁移checksum不回写。六个隔离容器和网络共7资源按捕获ID回收全部true；实际生产始终仍为旧.2。
+- 证据沿原sub2api-quality-evidence：upstream-v2254-production-rehearse.log及upstream-v2254-diagnostic-rollback.json；未把副本或备份存在冒称生产已升级。公网冒烟已准备同一请求的唯一usage/claim/quote、canonical金额及wallet_debit关联，只发送一条必要SSE，不根据并发生产余额差猜测本请求账目。
