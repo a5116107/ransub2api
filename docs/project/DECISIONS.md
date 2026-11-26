@@ -2596,3 +2596,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 先新增4个行为回归：全答案通过待比较、旧success但action待比较、混合成功/失败样本、只有持久批次pending证据。未改实现前实际4失败，分别复现test-other或test-passed；不将环境错误当红测。原位共用comparisonPending判断，使列表/详情及全部通过筛选统一，复用现有中英outcomes.comparison_pending，无平行组件/翻译。单条错误答案仍红色，刷新为已完成批次后恢复最终绿色。
 - 最终本地命令 pnpm exec vitest run src/views/admin/__tests__/AccountQualityView.spec.ts src/stores/__tests__/accountQuality.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts：3文件184通过/0失败/0跳过；vue-tsc -b和定向eslint --max-warnings 0退出0。继承的测试useRoute注入告警和Browserslist过期提示原样保留，不篡改跳过或屏蔽诊断。仅前端行为/测试与VERSION变化，无schema/调度/倍率/账号配置变更。
 - 候选版本2.25.2-ransub.2，生产仍.1；发行前临停Release，避免15分钟补偿触发重复编译。后续同源构建、预构建镜像、公网UI/更新持久性和唯一用量各自验收；本地通过不等于线上加载。原28项20done/8部分保持，D7.1单独跟踪子验收，不提前关闭D7父任务。
+
+
+### 2026-11-26 D8.1：后台重启接入既有优雅退出
+
+- 发布链源码检查发现原 sysutil.RestartService 在100ms后直接os.Exit(0)，并未进入main的SIGTERM监听、Lifecycle.BeginDrain/Wait、Server.Shutdown和defer清理。只修改现有实现为向自身发送SIGTERM，继续使用原监督器重启及现有延迟，不新增第二套退出或结算实现；Windows非Linux行为保持。
+- 独立Linux测试仅对其自有子进程请求重启，事先注册SIGTERM并断言退出清理标记。旧源码真实退出1，证实原os.Exit跳过清理；第一次PowerShell未引用点参数导致flag错误另留证，不当红测；一次控制台GBK打印错误发生在Linux原始输出已保存之后，原始失败仍保留。修复后三轮专用测试通过，非root WSL运行完整sysutil为4顶层/13父子通过、0fail/skip；Windows/交叉Linux go vet均0。Windows全包仍因原cgroup逃逸夹具缺符号链接权限失败，未改skip/断言，Linux同例实际通过。
+- v2.9.0源码linter虽输出0 issues但随后报Go1.27 export format typecheck错误并退出7，不认作通过；改用已缓存且兼容的v2.15.0，仍使用原项目规则、不削弱检查。最终lint、构建及生产后台重启待独立留证。
+- D7.1中英1440/390实际浏览器28项通过，含待对照/旧success/最终通过/失败/unknown、单样本真实状态和键盘打开，无页面/网络错误及写请求；读取唯一H盘已构建嵌入前端，非旧source副本。截图pending-comparison-zh/en-1440/390.png，不冒充生产数据。
+- 将重启修复合并入同一未公开2.25.2-ransub.2。先前f7667d551源本机构建仍在Go阶段、无归档输出；核对PID/父子/完整目标与无编译子进程后仅停止该作废构建，保留失败日志，原输出input为空可复用。未公开/重写任何已发行制品，不为两项修复分别重启生产。
+
+- 兼容v2.15.0沿原规则完整sysutil lint最终退出0、0 issues.，原v2.9导入失败日志不覆盖；不修改go.mod或lint规则。两项源码验证完成，进入同一.2最终构建与生产验收。

@@ -2,37 +2,37 @@
 package sysutil
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 )
 
-// RestartService triggers a service restart by gracefully exiting.
-//
-// This relies on systemd's Restart=always configuration to automatically
-// restart the service after it exits. This is the industry-standard approach:
-//   - Simple and reliable
-//   - No sudo permissions needed
-//   - No complex process management
-//   - Leverages systemd's native restart capability
-//
-// Prerequisites:
-//   - Linux OS with systemd
-//   - Service configured with Restart=always in systemd unit file
+// RestartService sends SIGTERM through the application's normal shutdown path.
+// A Linux service supervisor (systemd Restart=always or a container restart
+// policy) starts the service again after request draining and cleanup finish.
 func RestartService() error {
 	if runtime.GOOS != "linux" {
-		log.Println("Service restart via exit only works on Linux with systemd")
+		log.Println("Service restart via signal requires Linux with a restart supervisor")
 		return nil
 	}
 
-	log.Println("Initiating service restart by graceful exit...")
-	log.Println("systemd will automatically restart the service (Restart=always)")
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return fmt.Errorf("find service process for restart: %w", err)
+	}
 
-	// Give a moment for logs to flush and response to be sent
+	log.Println("Initiating service restart through graceful shutdown...")
+
+	// Let the response finish before the server begins its normal drain.
+	// Exiting here directly would skip active requests and deferred cleanup.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		os.Exit(0)
+		if err := process.Signal(syscall.SIGTERM); err != nil {
+			log.Printf("Service restart signal failed: %v", err)
+		}
 	}()
 
 	return nil
