@@ -36,7 +36,7 @@ function render(locale = 'en', observerMode = false, realCharts = false) {
     stubs: { AppLayout: { template: '<main><slot /></main>' }, Teleport: true,
       UsageStatsCards: true, UsageTable: true, UsageCleanupDialog: true, UsageExportProgress: true,
       UserBalanceHistoryModal: true, OpsErrorLogTable: true, OpsErrorDetailModal: true,
-      UsageConnections: true, LatencyObservabilityPanel: true, UserTokenRanking: true,
+      UserTokenRanking: true,
       TokenUsageTrend: true, ModelDistributionChart: !realCharts, GroupDistributionChart: !realCharts, EndpointDistributionChart: !realCharts,
     },
   } })

@@ -67,8 +67,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
-	var timing *requesttiming.WSTurnCapture
-	defer func() { finishOpenAIWSTurnTiming(timing, ctx, forwardResult, forwardErr) }()
+
 	keyAuthority, authorityErr := s.openAIWSKeyAuthority()
 	if authorityErr != nil {
 		return nil, wrapOpenAIWSFallback("upstream_key_concurrency_unavailable", authorityErr)
@@ -619,7 +618,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return err
 			}
 		}
-		timing = newOpenAIWSTurnTiming(account, time.Now())
+
 		if err := lease.WriteJSONWithContextTimeout(ctx, value, s.openAIWSWriteTimeout()); err != nil {
 			lease.MarkBroken()
 			logOpenAIWSModeInfo(
@@ -783,7 +782,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 		}
 		if err := FlushGatewayResponse(c.Writer); err != nil {
-			timing.DownstreamWrite(err)
+
 			markClientDisconnected("downstream_flush_error")
 			return
 		}
@@ -801,7 +800,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		frame = append(frame, '\n', '\n')
 		commitTurnState()
 		n, wErr := c.Writer.Write(frame)
-		timing.DownstreamWrite(wErr)
+
 		if wErr == nil && n == len(frame) {
 			wroteDownstream = true
 			deliveryObservation.data(message, gjson.GetBytes(message, "type").String())
@@ -947,7 +946,7 @@ readLoop:
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
-		timing.Content(message)
+
 		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
 			message = normalized
 		}
@@ -1250,11 +1249,7 @@ readLoop:
 		}
 
 		commitTurnState()
-		renderErrors := len(c.Errors)
 		c.Data(http.StatusOK, "application/json", finalResponse)
-		for _, renderError := range c.Errors[renderErrors:] {
-			timing.DownstreamWrite(renderError.Err)
-		}
 	} else {
 		flushStreamWriter(true)
 	}

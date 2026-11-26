@@ -2015,8 +2015,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnCtx, startDrain, finishDrain := openAIWSDrainContext(continuationCtx)
 		defer finishDrain()
 		ctx := turnCtx
-		var timing *requesttiming.WSTurnCapture
-		defer func() { finishOpenAIWSTurnTiming(timing, continuationCtx, forwardResult, forwardErr) }()
+
 		keyTurn := &openAIWSKeyTurn{authority: keyAuthority, fingerprints: lease.conn.upstreamKeyFingerprints, abort: func(error) { lease.MarkBroken() }}
 		keyCtx, keyErr := keyTurn.begin(ctx)
 		if keyErr != nil {
@@ -2063,7 +2062,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return nil, err
 			}
 		}
-		timing = newOpenAIWSTurnTiming(account, time.Now())
+
 		if err := agentRecovery.beginSocket(latest, clientPayload, payload, wsURL, lease.conn.agentRecoveryHeaders, "ctx_pool"); err != nil {
 			if latencyGenerationStartedTurn != turn {
 				return nil, openAIWSUnsentAgentTurn(err, clientPayload, originalModel, turn)
@@ -2158,7 +2157,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					wroteDownstream,
 				)
 			}
-			timing.Content(upstreamMessage)
+
 			if normalized, changed := normalizeCompletedImageGenerationStatus(upstreamMessage); changed {
 				upstreamMessage = normalized
 			}
@@ -2359,7 +2358,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				}
 				if err := writeClientMessage(clientMessage); err != nil {
-					timing.DownstreamWrite(err)
+
 					if isOpenAIWSClientDisconnectError(err) {
 						clientDisconnected = true
 						startDrain()

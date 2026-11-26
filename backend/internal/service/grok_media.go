@@ -69,7 +69,7 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 func (e GrokMediaEndpoint) IsAsyncVideoCreate() bool {
 	switch e {
 	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions,
-		SeedanceEndpointCreate, MiniMaxH3EndpointCreate:
+		SeedanceEndpointCreate, MiniMaxH3EndpointCreate, OpenAIVideoEndpointCreate:
 		return true
 	default:
 		return false
@@ -77,6 +77,9 @@ func (e GrokMediaEndpoint) IsAsyncVideoCreate() bool {
 }
 
 func (e GrokMediaEndpoint) AsyncVideoProvider() string {
+	if e.IsOpenAIVideo() {
+		return "openai"
+	}
 	if e.IsSeedance() {
 		return "seedance"
 	}

@@ -208,3 +208,20 @@ func TestOpenAIVideoLifecycle(t *testing.T) {
 	require.Len(t, usage.logs, 2)
 	slots.assertReleased(t)
 }
+
+func TestOpenAIVideoAsyncEndpointIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint service.GrokMediaEndpoint
+		create   bool
+	}{
+		{service.OpenAIVideoEndpointCreate, true}, {service.OpenAIVideoEndpointStatus, false}, {service.OpenAIVideoEndpointContent, false},
+	} {
+		t.Run(string(tc.endpoint), func(t *testing.T) {
+			require.Equal(t, tc.create, tc.endpoint.IsAsyncVideoCreate())
+			require.Equal(t, "openai", tc.endpoint.AsyncVideoProvider(), "official video tasks must not alias Grok ownership")
+			require.Equal(t, !tc.create, tc.endpoint.IsVideoLookupRequest())
+		})
+	}
+	require.False(t, service.GrokMediaEndpointImagesGenerations.IsAsyncVideoCreate())
+	require.Equal(t, "", service.GrokMediaEndpointImagesGenerations.AsyncVideoProvider())
+}

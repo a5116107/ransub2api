@@ -249,10 +249,6 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "request_id is required")
 		return
 	}
-	if h.ForwardRegionalVideoQuery(c, endpoint, requestID) {
-		return
-	}
-
 	reqLog = reqLog.With(zap.String("model", requestModel))
 	setOpsRequestContext(c, requestModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
@@ -277,6 +273,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		if imageReleaseFunc != nil {
 			defer imageReleaseFunc()
 		}
+	}
+
+	if h.ForwardRegionalVideoQuery(c, endpoint, requestID) {
+		return
 	}
 
 	if h.errorPassthroughService != nil {

@@ -9,18 +9,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/google/uuid"
+
 	"github.com/stretchr/testify/require"
 )
-
-func addPriorityAnalysisTiming(t *testing.T, db sqlExecutor, row *service.UsageLog) {
-	t.Helper()
-	_, err := db.ExecContext(context.Background(), `INSERT INTO request_timing_details(usage_log_id,trace_id,created_at,detail)
-VALUES($1,$2::uuid,$3,jsonb_build_object('version',1,'started_at',$4::text,'outcome','success','status',200,
-'body_complete',true,'canceled',false,'truncated',false,'client_disconnect',false,'downstream_error',false,'terminal','completed'))`,
-		row.ID, uuid.NewString(), row.CreatedAt, row.CreatedAt.Format(time.RFC3339Nano))
-	require.NoError(t, err)
-}
 
 func TestPriorityAnalysisPostgresScopeWindowAndCompletePool(t *testing.T) {
 	ctx := context.Background()
@@ -51,7 +42,6 @@ func TestPriorityAnalysisPostgresScopeWindowAndCompletePool(t *testing.T) {
 		row := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: first.ID, RequestID: fmt.Sprintf("analysis-%d", time.Now().UnixNano()), Model: model, RequestedModel: model, GroupID: g, Stream: true, FirstTokenMs: &ms, DurationMs: &duration, InputTokens: 10, OutputTokens: 10, ActualCost: 1, TotalCost: 2, CreatedAt: at}
 		_, err := usage.Create(ctx, row)
 		require.NoError(t, err)
-		addPriorityAnalysisTiming(t, tx, row)
 	}
 	add("non-latest-model", &group.ID, now.Add(-time.Minute), 100)
 	add("non-latest-model", &group.ID, now.Add(-30*time.Minute), 1000)
@@ -78,9 +68,12 @@ func TestPriorityAnalysisPostgresScopeWindowAndCompletePool(t *testing.T) {
 		return service.PrioritySchedulingScore{}
 	}
 	require.Equal(t, 1, find(got).ProfitSamples)
-	require.Equal(t, 4, find(got).Samples, "account performance includes all models and groups in its global window")
-	require.NotNil(t, find(got).SelectedTTFTMs)
-	require.InDelta(t, 5274.5, *find(got).SelectedTTFTMs, .01)
+	require.Zero(t, find(got).Samples, "account-wide usage cannot prove the selected physical route")
+	require.Nil(t, find(got).SelectedTTFTMs)
+	global, err := readAccountPerformance(ctx, tx, []int64{first.ID}, time.Now(), nil)
+	require.NoError(t, err)
+	require.Equal(t, 4, global[first.ID].TTFTSamples, "official account-wide metrics remain available independently")
+	require.InDelta(t, 5274.5, *global[first.ID].AvgTTFTMs, .01)
 	q.Minutes = 60
 	wide, err := service.ReadPriorityAnalysis(ctx, accounts, usage, cfg, q)
 	require.NoError(t, err)
@@ -93,7 +86,7 @@ func TestPriorityAnalysisPostgresScopeWindowAndCompletePool(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ready", empty.Snapshot.HistoryStatus)
 	require.Zero(t, find(empty).ProfitSamples)
-	require.Equal(t, find(got).Samples, find(empty).Samples, "changing the financial model must not erase shared account evidence")
+	require.Zero(t, find(empty).Samples, "a financial model change never supplies missing route provenance")
 	// Enforce a true read-only PostgreSQL session after fixture setup. No data
 	// mutator can hide behind a successful GET implementation in this assertion.
 	_, err = tx.ExecContext(ctx, `SET LOCAL transaction_read_only = on`)
@@ -134,7 +127,6 @@ func TestPriorityAnalysisPostgresPublicAliasAndRouteQuality(t *testing.T) {
 	row := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, RequestID: fmt.Sprintf("analysis-alias-%d", time.Now().UnixNano()), Model: "route-model", RequestedModel: "public-alias", GroupID: &group.ID, Stream: true, FirstTokenMs: &ms, DurationMs: &duration, InputTokens: 1, OutputTokens: 2, CreatedAt: now}
 	_, err := usage.Create(ctx, row)
 	require.NoError(t, err)
-	addPriorityAnalysisTiming(t, tx, row)
 	rows, err := tx.QueryContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config,updated_at) VALUES($1,'route-model','*/30 * * * *',true,'{"quality":{},"parallel_count":1}',NOW()-INTERVAL '1 hour') RETURNING id`, account.ID)
 	require.NoError(t, err)
 	var plan int64
@@ -147,7 +139,8 @@ func TestPriorityAnalysisPostgresPublicAliasAndRouteQuality(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Snapshot.Candidates, 1)
 	require.Equal(t, "public-alias", got.Snapshot.Model)
-	require.Equal(t, 1, got.Snapshot.Candidates[0].Samples)
-	require.Equal(t, 1, got.Snapshot.Candidates[0].QualitySamples)
-	require.Equal(t, 1, got.Snapshot.Candidates[0].QualityPassed)
+	require.Zero(t, got.Snapshot.Candidates[0].Samples)
+	require.Nil(t, got.Snapshot.Candidates[0].SelectedTTFTMs)
+	require.Zero(t, got.Snapshot.Candidates[0].QualitySamples, "account-wide rounds cannot certify a physical route")
+	require.Zero(t, got.Snapshot.Candidates[0].QualityPassed)
 }

@@ -2743,3 +2743,31 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 文档提交独立于应用源；本地production和自有production/integration稳定线正常快进对齐，应用backend/frontend/deploy对正式v2.25.3-ransub.2零差异。唯一工作树保持，无新分支/worktree、未提交实现或新增债务标记。开发供应池分支与官方原仓库未被覆盖，活动PR列表为空。
 - 最后技能默认SSH会话报Timeout opening channel；复用本轮一直使用的已存原生SSH配置与严格主机校验立即成功，不重启服务或更换凭据。2026-11-27 00:01 HKT实际程序仍2.25.3-ransub.2/463bf7a00，六个应用/依赖容器healthy，无预演容器；根盘实际可用6198501376字节。临时文件逻辑清理量与实时可用空间分开，不把保留备份或镜像层大小当作释放量。
 - 最终发布run45851981440 success，仅publish-prebuilt-image成功，其余七作业skipped；Release自动化active，官方Latest仍v2.25.3，自有Latest v2.25.3-ransub.2。30个活动文档本地链接与STATE字节/行/检查点契约通过；原失败及受保护历史scratch保留，不再尝试绕行清理。
+
+
+### 2026-11-27 R1.2：v2.25.4诊断退役与扣费事务兼容集成
+
+- 继续时复核自有production/integration均为136ca06a3，线上实际.2/463bf7a00/加载67e330aebdf9、六容器健康；当前PR空。新官方v2.25.4固定实际提交d8f00260f44bf6a6d0385eaa92c74841ab5476d5，102文件差异。用户明确选择采用官方诊断移除方案、先备份历史数据；不运行编译测试CI，不把供应池开发分支合入。
+- 唯一工作树真实两父合并产生28文件冲突。保留自有手动工作流；采用诊断页面/接口/两表退休和usage性能口径，保留历史流量/余额预测/守护/工单、自研倍率门、共享Key、会话及监测预算。合并自动删除的TrafficPanel和共享UTF8流量标签辅助函数已原位修复；更新用户/管理边界测试，不把文本性能样本当模型/缓存验真。
+- 去掉持久诊断读写及原WS逐轮诊断生产者，删除已退休的专属测试/翻译/文档与无调用stub。显式账号连接测试及完整响应解析仍有真实调用，未盲删共用内存解析器。当前设计原位移除已退休计时/规范缓存声明，仅在此追加历史；原D5/D6验收不凭新版本缩减或关项。
+- 官方usage没有不可变物理线路来源。自研线路范围读保持未知，管理无范围汇总采用官方usage均值；不借旧线路/异组/异模型/异effort历史或伪造零值。实际post-retirement PostgreSQL验证两表不存在、全局5样本均值与模型/组/端点/effort过滤，指定线路不借全局。原运行时反馈/最终资格守卫独立保持。
+- 新直接扣费专项实测四独立仓储并发只扣一次、和旧pending恢复相遇不重复扣款；canonical INSERT真实PG触发器失败回滚余额/claim，解除后恢复、篡改指纹拒绝。新测试的t.Context在Cleanup前被取消导致context canceled，原位换独立有界清理上下文，保留原断言；race最终重复2轮通过（29.156s）。旧清理失败证据保留。
+- 本地最终联合PostgreSQL195含子例全部通过/0失败/0跳过（147.806s）；覆盖账号性能、优先调度作用域/全池、旧账恢复/报价/去重及AI告警。最初两个官方分析测试混用账号指标和线路指标失败，原位分离全局正向均值与线路未知断言，不放宽线路守卫。UI最终9文件186项全通过、类型通过；原140/71为重叠范围，不累加。定向eslint和Windows七包vet退出0；完整unit、Linux vet及兼容增量lint仍待原handle结果，不冒称全仓全绿。
+- 继续复用既有ops.py入口、制品和证据目录。副本及生产切换增加独立诊断schema+data归档、SHA与行数/内容校验；旧程序回退前必须实际恢复两表，仅撤销本次退休迁移状态后重升；其他checksum和账务数据不回写。迁移checksum按原runner的TrimSpace计算，不用原文件字节hash代替。此时归档/回退/发布仍待实跑，线上未切换。旧账手工退役SQL本轮不执行。
+
+- 扩大全unit初轮不是全绿：43153条pass、42skip、820fail事件（含父节点）；service只两叶因旧attributed_v1 fixture与官方强制legacy_forward不符，原位保留已知/未知/异测量/异分位断言、交换新旧测量样本。handler大量store_unavailable已核实测试PATH调用系统Redis3.0.504；复用既有H:/Root/tools/redis/5.0.14.1，仅作用于验证子进程，不改生产Lua。诊断后精确终止该轮handler.test.exe及其一个Redis子进程，保留原失败与终止记录；改Redis5完整重验，未将终止/跳过算成功。
+- 兼容Go1.27.4的六包增量lint首轮输出0 issues但超过8分钟，退出4；保留超时。相同真实规则/并发2增至15分钟并复用暖缓存后退出0/0 issues；Windows和Linux七包vet退出0。最终前端9文件186项、类型及全部变更路径eslint退出0；30个当前文档本地链接有效。元数据同步run45866470875成功、追踪1a81b1aa8并以零应用差异并入eb426a48f，PR8可合并无冲突。
+- 生产prepare退出0：原16账号/2组/1用户/1Key/498迁移保留，备份319353109字节/SHA db8f624b8eae642d50e65978e184a737ec2e51c88b3428a0a3b4b1fa3927f34c；未停服务/删表/改业务配置。本地首候选eb426a48f已真实构建退出0且临时前端自动回收；随后只修测试夹具，因此该未公开候选须在最终源码固定后原路径重建，不改写公开制品。正式Release workflow暂时停用避免合并触发云端源码编译，发布自有资产后须恢复；当前仍未发布/切换。
+
+- 验证补丁6e218ec22339227dc735053b5dfe1d77b97faea6已提交/推送；相对eb426仅测试/文档变化，业务实现零差异。退休测量四种状态定向通过（service1.507s），Redis5原存储失败代表范围service/handler通过（1.709s/16.036s）；全量纠正环境仍沿原handle，不提前报完成。
+- 首个未发布候选四文件共54247114逻辑字节的精确回收命令被宿主policy拒绝，整个组合命令未执行。未换工具、移动或重试删除；保留H:/Root/DevCache/releases/ransub2api/2.25.4-ransub.1下旧release-manifest.json、checksums.txt及input两文件。由于源码身份从eb426改为6e218，最终仅在该版本/verified建立对应新身份制品，不复用错误Commit标签、不把保留旧产物称为已释放。
+- 最终local-build退出0：verified归档54246366B/SHA15d76ae56d0a148e9bce7432a156e2255dd0f2c9cc7844c9f27a0f61549c6763，程序170909856B/SHAe85f3efc8765946aebe922c81a407d02047724182628b8c12b818a85f7c543b1；当前500MiB上限保持。两个成功构建的frontend-*均随context回收，最终只留归档/manifest/notes，无新源码工作树或依赖副本。仅导入到同版远端备份路径供隔离生产副本演练，尚未切换生产。主机未检出需停用的诊断collector unit。
+
+- 生产副本四阶段最终退出0/production_changed=false：.2基线498迁移→.4候选499→实际诊断数据恢复后.2回退498→再次.4退役499；每阶段核对/proc/1/exe实际SHA及原管理员/16账号/性能API，优先调度仍关闭。11张流量/预测/守护/工单历史摘要前后一致，未执行任何供应商探测。
+- 副本专项诊断归档216225536B/SHA d7d0fbbd9daff8834f8eae4a04cbd02dd222f300735dceba5fc94220f0598cc0，耗时139234行/连接150386行；恢复schema+data后行数/内容摘要一致，只有400_drop_request_diagnostics.sql迁移状态撤销，再升后同checksum重新执行。diagnostic_rollback_restored和diagnostic_reupgrade_retired均true；原账务/11历史表和其余迁移checksum不回写。六个隔离容器和网络共7资源按捕获ID回收全部true；实际生产始终仍为旧.2。
+- 证据沿原sub2api-quality-evidence：upstream-v2254-production-rehearse.log及upstream-v2254-diagnostic-rollback.json；未把副本或备份存在冒称生产已升级。公网冒烟已准备同一请求的唯一usage/claim/quote、canonical金额及wallet_debit关联，只发送一条必要SSE，不根据并发生产余额差猜测本请求账目。
+
+- Redis5纠正环境完整service/handler结果：service整包536.286s通过；共43264条pass/43skip/6fail事件，失败归于handler四叶而非全部通过。两叶Goal测试仍期待旧external_goal_objective，而生产既定安全修复已用保留原namespace/name/output的JSON不可信封套；保留原内容/身份/幂等及真工具call_id断言，按实际已批准边界补专用封套校验，不改生产归一化。
+- 真实视频缺口：OpenAIVideoEndpointCreate遗漏于IsAsyncVideoCreate，导致已接受任务未保存归属/计费快照且deferred WriteResponse不执行，最终空200；原202断言在旧实现实证失败。原位补异步分类并明确openai提供方（不借grok身份），保留完整生命周期、同上游task ID的账号/Key隔离、延迟唯一计费等断言。该修复不宣称OpenAI已支持区域资金或共享Key持久任务的全部契约；未支持提供方仍沿既有权威拒绝，不自动启用生产视频或检测。
+- 媒体统一入口的区域查询转发位于审核代码之前，触发原静态顺序检查。把该query-only委托移到生成请求的审核/准入之后、其他路由/选账号/计费之前；查询本身仍不执行生成审核、不分配生成槽位。原审核顺序测试不删不放宽，既有区域查询及资金拒绝/恢复继续验证。
+- 修复后媒体/Goal/审核/异步/Seedance/MiniMax两包专项875项全部通过/0失败/0跳过，保留原6失败和43skip，不将它们改报全仓绿；仅对受影响原调用链扩大验证，未改迁移和前端。准备未公开.4自研.2候选，.1只是已验迁移的内部候选，不改写已有公开发行或伪造source。

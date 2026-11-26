@@ -26,7 +26,7 @@ service 退出时先完成平台函数的 body close 和共用 keepalive 清理�
 
 测试专用 HTTPUpstream 适配器只委托原调用。共享 service 不被复制或修改，不增加重试。
 解析器通过 `ResponseContext` 绑定真实响应的 trace，复用 `Output`/`Stage`，不改普通 gateway 的路由行为。
-参见 [已有分段计时说明](stream-timing.md)。
+v2.25.4 已退役业务逐请求耗时与连接诊断；本页的显式账号连接测试仍独立执行，仅在内存中汇总，不写退休的诊断表。
 
 ## 3. 测量口径与重叠
 

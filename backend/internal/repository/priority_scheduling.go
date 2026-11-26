@@ -2,36 +2,11 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
-
-// The final physical attempt must prove the billed account's current route.
-// A missing/malformed/foreign route is absent evidence, including in legacy
-// latency mode. Nil is reserved for explicit unscoped repository callers.
-func priorityRouteFilterSQL(parameter string) string {
-	return strings.ReplaceAll(`($ROUTES::jsonb IS NULL OR (
-    detail->>'version'='1' AND attempt->>'account_id'=account_id::text
-    AND attempt->>'route_fingerprint' ~ '^[0-9a-f]{64}$'
-    AND attempt->>'route_fingerprint'<>repeat('0',64)
-    AND attempt->>'route_fingerprint'=($ROUTES::jsonb->>account_id::text)
-   ))`, "$ROUTES", parameter)
-}
-
-func priorityRouteQueryValue(routes map[int64]string) (any, error) {
-	if routes == nil {
-		return nil, nil
-	}
-	data, err := json.Marshal(routes)
-	if err != nil {
-		return nil, err
-	}
-	return string(data), nil
-}
 
 // Performance reuses the shared metrics and formula. Request-scoped reads also
 // require immutable route/protocol evidence; unscoped account monitoring keeps

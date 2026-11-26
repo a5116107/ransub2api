@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -54,6 +55,22 @@ func TestNormalizeCodexPageContextFirstMessage(t *testing.T) {
 	require.Equal(t, got, again)
 }
 
+func assertCodexUntrustedContextText(t *testing.T, name, output, text string) {
+	t.Helper()
+	if name != "goal_objective" {
+		require.Equal(t, "<external_"+name+">"+output+"</external_"+name+">", text)
+		return
+	}
+	const begin = "<untrusted_codex_agent_context>\n"
+	const end = "\n</untrusted_codex_agent_context>"
+	require.True(t, strings.HasPrefix(text, begin))
+	require.True(t, strings.HasSuffix(text, end))
+	raw := strings.TrimSuffix(strings.TrimPrefix(text, begin), end)
+	var envelope map[string]string
+	require.NoError(t, json.Unmarshal([]byte(raw), &envelope))
+	require.Equal(t, map[string]string{"namespace": "agent", "name": "goal_objective", "output": output}, envelope)
+}
+
 var codexTextContextNamesForTest = []string{"browser_info", "goal_objective", "untrusted_context", "untrusted_content", "ide_context", "proposed_plan"}
 
 func TestNormalizeCodexAdditionalUntrustedContext(t *testing.T) {
@@ -82,7 +99,7 @@ func TestNormalizeCodexAdditionalUntrustedContext(t *testing.T) {
 			item := gjson.GetBytes(got, "input.0")
 			require.Equal(t, "message", item.Get("type").String())
 			require.Equal(t, "user", item.Get("role").String())
-			require.Equal(t, "<external_"+name+">"+output+"</external_"+name+">", item.Get("content.0.text").String())
+			assertCodexUntrustedContextText(t, name, output, item.Get("content.0.text").String())
 			require.False(t, item.Get("call_id").Exists())
 			require.Equal(t, "continue", gjson.GetBytes(got, "input.1.content").String())
 			again, changed := normalizeCodexUntrustedContext(got)
@@ -159,7 +176,7 @@ func TestNormalizeCodexAdditionalUntrustedContextBlankCallIDsAndMixedInput(t *te
 		require.Len(t, gjson.GetBytes(got, "input").Array(), len(names))
 		for i, item := range gjson.GetBytes(got, "input").Array() {
 			require.Equal(t, "user", item.Get("role").String())
-			require.Equal(t, "<external_"+names[i]+">context for "+names[i]+"</external_"+names[i]+">", item.Get("content.0.text").String())
+			assertCodexUntrustedContextText(t, names[i], "context for "+names[i], item.Get("content.0.text").String())
 		}
 	}
 }

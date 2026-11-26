@@ -71,7 +71,7 @@ func UserTraffic(recorder TrafficRecorder) gin.HandlerFunc {
 			}
 			// UUID allocation, encoding and persistence belong to the worker.
 			e := service.TrafficEvent{UserID: key.UserID, APIKeyID: key.ID,
-				Endpoint: connectionMetadata(c.FullPath(), 256), Method: c.Request.Method, StartedAt: started, FinishedAt: time.Now(),
+				Endpoint: trafficEndpoint(c.FullPath()), Method: c.Request.Method, StartedAt: started, FinishedAt: time.Now(),
 				UploadBytes: body.bytes.Load(), DownloadBytes: writer.bytes.Load(), StatusCode: status, Outcome: outcome,
 				RequestComplete: body.complete.Load() || body.expected == 0, MeasurementVersion: 1}
 			if key.GroupID != nil {
@@ -150,4 +150,13 @@ func (w *trafficWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		w.hijacked.Store(true)
 	}
 	return conn, rw, err
+}
+
+// Bound the retained traffic route label without recording URLs or query strings.
+func trafficEndpoint(value string) string {
+	value = strings.ToValidUTF8(value, "")
+	if len(value) > 256 {
+		value = strings.ToValidUTF8(value[:256], "")
+	}
+	return value
 }

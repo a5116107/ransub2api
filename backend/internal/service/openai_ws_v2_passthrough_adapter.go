@@ -1125,17 +1125,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// about to be written. Until then a late terminal from the previous turn
 	// must not settle the pending turn's slots or usage.
 	pendingUpstreamTurn := atomic.Bool{}
-	var activeTiming atomic.Pointer[requesttiming.WSTurnCapture]
-	// Only the upstream reader owns deliveryTiming. Relay joins both readers
-	// before deferred cleanup; completion may bind usage before the final write.
-	var deliveryTiming *requesttiming.WSTurnCapture
 	// Relay joins both directions before returning, so no completion can race
 	// this fallback. Close upstream before releasing an unfinished turn.
 	defer func() {
 		_ = closeUpstream()
-		cause := errors.New("websocket turn ended before downstream completion")
-		finishOpenAIWSTurnTiming(activeTiming.Swap(nil), ctx, nil, cause)
-		finishOpenAIWSTurnTiming(deliveryTiming, ctx, nil, cause)
+
 		if turn := activeTurn.Swap(0); turn != 0 && hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(int(turn), nil, errors.New("websocket turn ended before terminal event"))
 		}
@@ -1501,7 +1495,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		cancelFirstWrite()
 		return denied
 	}
-	activeTiming.Store(newOpenAIWSTurnTiming(account, time.Now()))
+
 	if err := agentRecovery.beginSocket(latest, pendingAgentSource, firstClientMessage, wsURL, headers, "passthrough"); err != nil {
 		cancelFirstWrite()
 		return openAIWSUnsentAgentTurn(err, pendingAgentSource, gjson.GetBytes(firstClientMessage, "model").String(), 1)
@@ -1574,7 +1568,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				scope := openAIWSContinuationScope(account, model, gjson.GetBytes(payload, "service_tier").String())
 				activeResponseScope.Store(&scope)
-				activeTiming.Store(newOpenAIWSTurnTiming(account, time.Now()))
+
 				if err := agentRecovery.beginSocket(latest, pendingAgentSource, payload, wsURL, headers, "passthrough"); err != nil {
 					return openAIWSUnsentAgentTurn(err, pendingAgentSource, usageMeta.requestModelForFrame(pendingAgentSource), max(2, int(completedTurns.Load())+1))
 				}
@@ -1656,11 +1650,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					UpstreamProtocol:              "ws",
 					UsageUnavailable:              smartProtocolStrict(ctx) && !turn.UsageObserved,
 				}
-				if capture := activeTiming.Swap(nil); capture != nil {
-					// The terminal is observed, but its client write still follows.
-					turnResult.requestTiming = capture.Collector
-					deliveryTiming = capture
-				}
 				if forward := acceptedTurnForwardAt.Swap(nil); forward != nil {
 					arrival := time.Time{}
 					if sampled := acceptedQueueArrival.Swap(nil); sampled != nil {
@@ -1697,16 +1686,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			AfterClientWrite: func(msgType coderws.MessageType, payload []byte, writeErr error) {
-				if deliveryTiming != nil {
-					deliveryTiming.DownstreamWrite(writeErr)
-					// A buffered write may succeed after the single ingress reader
-					// has already observed peer closure. Preserve that independent
-					// delivery evidence even before the relay enters drain mode.
-					deliveryTiming.Finish(writeErr, ctx.Err() != nil, clientFrameConn.reader.disconnected())
-					deliveryTiming = nil
-				} else if capture := activeTiming.Load(); capture != nil {
-					capture.DownstreamWrite(writeErr)
-				}
 				if msgType == coderws.MessageText && writeErr == nil {
 					eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 					markOpenAIWSClientVisibleFailure(c, eventType, payload, &OpsUpstreamWSFailure{Phase: "upstream_event"})
@@ -1741,9 +1720,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {
 				if msgType != coderws.MessageText {
 					return nil
-				}
-				if capture := activeTiming.Load(); capture != nil && !pendingUpstreamTurn.Load() {
-					capture.Content(payload)
 				}
 				eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 				regionalMeterObserveUsage(ctx, payload, eventType)
@@ -1843,9 +1819,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			streamReadIncomplete: true,
 		}
 	}
-	// A pending generation is not a successful session aggregate. Its observed
-	// partial usage, if any, retains only this generation's finished diagnostic.
-	finishOpenAIWSTurnTiming(activeTiming.Swap(nil), ctx, unfinishedResult, errors.New("websocket turn ended without delivered terminal"))
+
 	if cause := context.Cause(ctx); cause != nil {
 		if errors.Is(cause, ErrUpstreamKeyLease) {
 			if turn := activeTurn.Swap(0); turn != 0 && hooks != nil && hooks.AfterTurn != nil {
