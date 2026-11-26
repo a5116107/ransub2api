@@ -51,7 +51,8 @@ CREATE TABLE scheduled_test_plans (
  model_id TEXT NOT NULL, cron_expression TEXT NOT NULL, enabled BOOLEAN NOT NULL,
  max_results INT NOT NULL, auto_recover BOOLEAN NOT NULL, last_run_at TIMESTAMPTZ,
  next_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
- pelican_config JSONB, running_until TIMESTAMPTZ);
+ pelican_config JSONB, running_until TIMESTAMPTZ,
+ quality_round_seq BIGINT NOT NULL DEFAULT 0, quality_429_state JSONB);
 CREATE TABLE account_quality_states (plan_id BIGINT PRIMARY KEY REFERENCES scheduled_test_plans(id), state JSONB NOT NULL);
 CREATE TABLE scheduler_outbox (id BIGSERIAL PRIMARY KEY, event_type TEXT NOT NULL, account_id BIGINT, payload JSONB);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);`)

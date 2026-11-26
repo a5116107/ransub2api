@@ -8,6 +8,7 @@
     </p>
     <progress v-if="coverage != null" :value="coverage" max="100" class="block h-2 w-full max-w-40 accent-primary-600" :aria-label="t('channelOps.evidence.roundCoverage')" />
     <p v-if="!round.round_complete" class="text-xs text-amber-700 dark:text-amber-400">{{ t('channelOps.incompleteRound') }} {{ count(round.round_probes) }} / {{ count(round.round_expected) }}</p>
+    <p v-if="rateLimitStreak" data-testid="quality-rate-limit-policy" class="text-xs text-amber-800 dark:text-amber-300">{{ rateLimitStreak === 3 ? t('qualityOps.rateLimitDegraded') : t('qualityOps.rateLimitPending', { n: rateLimitStreak }) }}</p>
     <StatusBadge status="unknown" :label="t('channelOps.evidence.identityUnknown')" data-testid="quality-round-identity" />
     <details class="max-w-xs text-xs">
       <summary class="cursor-pointer text-primary-600 dark:text-primary-400">{{ t('channelOps.evidence.details') }}</summary>
@@ -32,6 +33,7 @@ const props = defineProps<{ round: QualityRound; queriedAt?: string }>()
 const { t, locale } = useI18n()
 const validCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 const count = (value: unknown) => validCount(value) ? value : t('channelOps.evidence.unknown')
+const rateLimitStreak = computed(() => Number.isSafeInteger(props.round.quality_429_streak) && props.round.quality_429_streak! > 0 && props.round.quality_429_streak! <= 3 ? props.round.quality_429_streak : null)
 const coverage = computed(() => {
   const { round_probes: actual, round_expected: expected } = props.round
   return validCount(actual) && validCount(expected) && expected > 0 && actual <= expected ? actual / expected * 100 : null

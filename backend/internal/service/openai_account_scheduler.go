@@ -3259,7 +3259,9 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
-	if !success && len(observedErr) > 0 && IsUpstreamKeyAdmissionFailure(observedErr[0]) {
+	// Canonical context rejections and local shared-key admission belong to
+	// this request, not to account health or successful recovery.
+	if !success && len(observedErr) > 0 && (IsUpstreamKeyAdmissionFailure(observedErr[0]) || errors.Is(observedErr[0], errGatewayContextRejection)) {
 		return false
 	}
 	if !success && len(observedErr) > 0 && (isGrokRequestScopedFailure(observedErr[0]) || IsUpstreamModerationDenied(observedErr[0])) {

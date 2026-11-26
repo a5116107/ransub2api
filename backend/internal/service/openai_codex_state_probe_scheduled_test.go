@@ -74,6 +74,9 @@ func TestRunPelicanBackgroundStateProbeInconclusive(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "failed", result.Status)
 	require.Equal(t, openAICodexStateInconclusiveErrPrefix+": "+OpenAICodexStateFailureRateLimited, result.ErrorMessage)
+	require.Equal(t, http.StatusTooManyRequests, result.PelicanConfig.QualityHTTPStatus, "local availability wrapper must preserve terminal rate-limit evidence")
+	require.Zero(t, result.PelicanConfig.Quality429Streak, "single observations do not assign the persisted round streak")
+	require.Equal(t, "state_probe_not_connectivity", result.PelicanConfig.AvailabilityResult.Reason)
 	require.Contains(t, result.ResponseText, "判定：无法判断")
 	require.Equal(t, "unknown", result.QualityJudgment.Verdict)
 	// 无法判断不算降智证据：这一轮是 inconclusive，不触发处置。
