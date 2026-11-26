@@ -2726,3 +2726,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 真实gpt-6.1-sol SSE200，唯一response.completed/文本delta、无失败终态，含网络15.468s；client7582d8cd-b6ab-4d97-9b7d-e8d2aeb95c67唯一usage138899/上游14/下游Key1，输入53/输出5。该单次成功不冒充所有旧会话/长期SLA/缓存验真。
 - 精确dry-run核0容器/进程引用后清本轮候选及cutover-fields171143599B，另清未上线.5候选171085984B；逻辑342229583B，.5删除前后磁盘可用7273664512→7444758528。保留全部数据库、配置/程序/镜像回滚和发行制品，未全机prune。
 - 截图读到卡片分隔符误为“路”：本地一次Path.read_text()默认GBK将UTF8中点C2B7解成汉字；仅新UpstreamLineCards的10处受影响。改为显式UTF8并原位还原中点，新增P50/P90及模型组分隔回归；不重写已发布.1，以.2补丁交付。实际作品预览及新字节加载仍待；不能用旧截图证明修正已上线。
+
+
+### 2026-11-26 D7.2/R1.1收尾：最终.2实际加载与作品用户流
+
+- `.2`固定应用源`463bf7a00368b668c26183771c3c93fca7df7427`，171106464字节程序SHA256`67e330aebdf935528b43e9ec44611f7abd9d402ca22f80493fd09107562210cb`；54329901字节归档SHA256`e39ae8875ccac6af71586e26c95d7cf6252f91a174504af5f8e8414e65d8665c`。正式Latest和公开四资产校验匹配，镜像`cee1c73e4894238083d92a047cce494da7fc6762ced71c51364a2d554e1f6bd8`同源。run45851981440仅publish-prebuilt-image成功，7个源码相关作业skipped；临时停用期间推送/本地发布后已恢复原自动Release，无编译/测试CI。
+- 补丁19项前端/类型/eslint通过；业务backend相对.1零差异（VERSION例外），复用已验联合PG/race/vet和.1业务SSE，不因前端字符变化重复计费请求。.1→.2→.1回退→再次.2副本四阶段通过，498迁移/16账号及11历史表摘要不变；候选总览读取/工具结果及429伪造字段剥离通过。初次提前pull读到未完成副本proof被守卫拒绝，未拉取/改生产；等待原handle完成后再执行，不绕过前置。
+- `.2`生产排空真实在线更新200、后台SIGTERM优雅重启、同镜像重建、verify均退出0。最终APP27d20592dd74，原PGf30095818cb1/Redis5b796d6478e0不变，16账号/2组/1用户/1Key/498迁移保持。切换备份database.cutover-ecbd4630fa56.dump SHA131e2a8efd62a70da8c0241bf4d9f3f6e78953fe96da11a2a2e5e8ebc7a47178；旧程序.1和镜像/数据/配置均保留。current=latest=2.25.3-ransub.2、has_update=false、warning=null，维护门已撤。
+- 最终公网ui-only退出0/passed=true：真实16账号、逐账号timer/performance、原流量/守护与工单禁用边界、中英1440/390、精确按生效账号ID过滤、账号9下钻、账号编辑名称预填、授权表单和password输入类型、失败隐藏旧卡与恢复、普通导航/键盘刷新及UTF8中点通过。原导览在语言重载后出现并拦截点击，保存失败结果；通过其普通关闭按钮完成后复测，不注入/隐藏DOM伪造成功。无pageerror/HTTP错误/配置写入、无付费检测。作品16945按原管理员接口读出，实际打开既有沙箱预览且无allow-same-origin；截图已目视核对，显示被测gpt-6.1-sol/low/历史作品，不把生成成功说成模型身份验真。
+- 证据沿既有`H:/Root/DevCache/evidence/sub2api-quality-evidence`：upstream-overview-public-smoke-ui.json、原.1业务upstream-overview-public-smoke.json、production-{rehearse,deploy,verify,cleanup}.log、中英双宽截图与artwork.png。保存locator/guide失败而不删除；包/证据/缓存与临时产物分开。最终.2候选及cutover-fields再次dry-run核0引用后删除171143599B，本轮累计逻辑513373182B；未清回滚、历史数据或其他项目。
+- D7.2与R1.1各自明确范围完成，原28项20done/8部分不借子项改计数。当前稳定线已集成官方Latest v2.25.3，自动供应池仍保留开发分支；D2/D4外部关联/模型fast契约、D3其他能力/插件计量、D5/D6可信缓存域/净收益、D7解释、D8全能力混版和D9旧Mac/BPS长流仍开放。轮换凭据文件仅查元数据仍不存在，未读聊天token/未导入生产。
