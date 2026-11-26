@@ -2648,7 +2648,9 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 定时器API在`backend/internal/handler/admin/accounttimerapi/handler.go`把非领域错误统一收敛为`500/TIMER_internal`；该响应隐藏原始错误，不足以判定缺表、连接池耗尽、锁等待或其他数据库故障。Performance的503也可能来自其仓储查询失败。未据猜测修改业务代码。
 - `srv-hk2` SSH已登记主机密钥路径下的原生直连未建立连接，保存代理路径未收到SSH banner，TCP端口探测为可达；服务器管理通道当前不可用。没有读取/改动远程数据，没有重启、迁移或部署。下游请求/服务日志、PostgreSQL连接/等待状态和`/proc/1/exe` SHA256均待服务器日志或管理通道恢复后核实。
 - 当前公开域名的只读探测为2026-11-26 15:04–15:07 HKT `/health`连续200，未登录auth/admin路由返回401。该窗口与截图请求故障是否相同时间未知；不可宣称用户流程恢复。
-- `.3`Linux amd64归档SHA256=`39c88ab2fff80986fa7ae52fa70cdf1c4265c645540f9608857a64059bfcc16f`，源提交`c0a968c58ab2a9813590e6e1d5c37bc7dfe404b4`；发行目录校验和匹配。自有production分支和注释tag已推送至该源；发行工具核验tag、源码、校验和后发布`v2.25.2-ransub.3`，GitHub四个资产digest复核通过，归档250MB，使用本地预构建发布、不触发CI。
-- 推送时`--follow-tags`额外推送了本地遗留的官方tag`v2.19.1`（指向官方2.19.1源码且无自有Release）；经用户明确授权后只删除了自有仓库该误推tag，并以`git ls-remote`确认不存在。没有改官方远端或删除其他标签。
+- `.3`Linux amd64归档SHA256=`39c88ab2fff80986fa7ae52fa70cdf1c4265c645540f9608857a64059bfcc16f`，源提交`c0a968c58ab2a9813590e6e1d5c37bc7dfe404b4`；发行目录校验和匹配。自有production分支和注释tag已推送至该源；本地发行工具核验tag、源码、校验和后发布`v2.25.2-ransub.3`，GitHub四个资产digest复核通过，归档250MB。
+- 推送时`--follow-tags`额外推送了本地遗留的官方tag`v2.19.1`（指向官方2.19.1源码）；它触发了自有仓库的旧版Release流程。用户明确授权删除远端旧tag后，`git push origin --delete v2.19.1`返回`[deleted]`，GitHub ref API及按tag查Release API均返回404；没有改官方远端或删除其他标签。
+- 该tag push已触发Release run `45774837969`（head=`6de829fa2efa801dcf3071c4efe842198c7724be`），违反本任务“不运行CI”的约束；run执行了云端prepare、前端/多平台构建、Release及VERSION同步，无法撤销。删tag后GitHub将对应`Sub2API 2.19.1`转为Draft，资产仍挂在该Draft下，下载URL变为`untagged-0aa80b3ed7f69cdeb96e`，不再是公开发布状态；未删除Release/资产，也未创建替代tag。`.3`仍是GitHub Latest，Release列表已核实。
+- 自动化提交`aee3793423fccb7a14157fb0599cc671dccb455c`把VERSION改为2.19.1。为保留全部远端历史，先合并该机械提交，再提交`f92b36da6337110b53065963f7ef921d09701bbb`恢复VERSION为2.25.2-ransub.3；origin/production与本地一致，应用发行tag仍固定指向构建源c0a968c5。该文档后续提交只记录证据，不改发行程序。
 - `.3`已发行但生产仍.2。服务器未部署；不在SSH管理通道不可用且数据库健康未知时切换。生产SHA、日志/DB与管理工作流仍待SSH banner恢复或控制台提供脱敏证据；若日志确认依赖不可用，先修复并验证依赖再部署。
 - 生产错误复核的解除条件：SSH返回协议banner并可运行只读取证命令，或服务器控制台提供截图时间段的脱敏应用错误与PostgreSQL状态。届时按第一个共同失败依赖修根因；保留原镜像/程序/数据库备份及回滚材料。

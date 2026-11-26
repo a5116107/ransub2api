@@ -4,7 +4,7 @@
 
 <!-- resume:start -->
 D3.2代码c0a968c5；专项/全service、UI55、类型/lint、浏览器及Linux构建通过；.3已发行。
-授权：继续稳定线提交/同步/发行/部署；不CI、不新工作树。origin/production与v2.25.2-ransub.3均指向c0a968c5。
+授权：继续稳定线提交/同步/发行/部署；不CI、不新工作树。origin/production=f92b36da；.3 tag源=c0a968c5且为GitHub Latest。远端误推v2.19.1 tag已按授权删除；GitHub将对应旧Release转为Draft并保留资产。
 生产仍.2；截图见auth/performance 503、timer/schedulable 500。15:04–15:07 HKT health 200、未登录401。
 health仅测进程。SSH直连/代理未获banner，TCP可达；生产日志、DB和加载SHA未取到，根因未定。
 下一步：SSH恢复后取日志/DB/加载SHA，再决定.3切换。D3.2生产验收开放。
