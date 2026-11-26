@@ -106,12 +106,12 @@ func TestPriorityLatencySeriesPreservesSelectedEvidence(t *testing.T) {
 			cfg := DefaultPrioritySchedulingConfig()
 			cfg.Enabled, cfg.LatencyPercentile, cfg.LatencyMeasurement = true, 70, "attributed_v1"
 			value := 7000.0
-			signal := PrioritySchedulingSignal{Samples: 10, P90TTFTMs: 20000, SelectedTTFTMs: &value, LatencyPercentile: 70, LatencyMeasurement: "attributed_v1", LatencyEvidenceVersion: 1}
+			signal := PrioritySchedulingSignal{Samples: 10, P90TTFTMs: 20000, SelectedTTFTMs: &value, LatencyPercentile: 70, LatencyMeasurement: "legacy_forward", LatencyEvidenceVersion: 1}
 			switch state {
 			case "unknown":
 				signal.SelectedTTFTMs = nil
 			case "different_measurement":
-				signal.LatencyMeasurement = "legacy_forward"
+				signal.LatencyMeasurement = "attributed_v1"
 			case "different_percentile":
 				signal.LatencyPercentile = 90
 			}
