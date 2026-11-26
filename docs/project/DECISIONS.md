@@ -2775,3 +2775,18 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终视频/上下文补丁1c9955ba0389f699e190161e23e55fbe788b23b9已本地提交/同步；专项875通过后再做媒体/审核/上下文/恢复精确handler225全通过，race两包重复2轮各1.484s/1.405s、vet与增量lint0 issues。完整service原绿复用，handler原全量失败/43skip保留，与精确修复覆盖分开不合计。
 - 最终.4自研.2 local-build和verify退出0，归档54245560B/SHA e21e99504b1b27b7afd2c14bc050bf95fd67102d09b2bc0cda5877ae8085c197，程序170918048B/SHA090bb3bebbef7f6e2b035ec4dd79bea4ba576a7b6926832e0efb6ca49460c071，临时前端自动回收。前候选.1完整迁移和前端原验证不重造；最终包以同一既有ops入口追加完整副本复核，沿原handle33017，不据前候选冒称最终加载。
 - PR8在用户已授权审核合并范围内，固定已验head1c9955ba0、无冲突后正常merge为85bc50cd6f59cf756727ef954e214b8a9dd8384c；本地production及远端production/integration正常快进相同，没有force。合并tip与实际制品源码backend/frontend/deploy/.github零差异；活动PR空，official upstream禁推、供应池开发分支不动。合并时Release仍临时停用，尚未发行/生产切换，下一最终副本通过后使用同源资产发行并恢复自动化。
+
+- 最终1c9955ba0/.4自研.2生产副本四阶段再次实跑退出0：498→499→恢复诊断历史后498→再499；每轮实际加载SHA正确，16账号及11历史表摘要保持，7个容器/网络资源回收，production_changed=false。原诊断归档以同源SHA/行数校验复用（文件hardlink，不复制一份数据），实际生产切换仍须停止后取新快照，未以旧业务余额覆写当前余额。
+- 正式仅推v2.25.4-ransub.2标签到源码1c9955ba0389f699e190161e23e55fbe788b23b9，local-publish退出0。2026-11-26T18:35:05Z发布为stable/latest，四资产GitHub digest逐一匹配本地；归档e21e99504b1b与程序090bb3bebbef一致，公开Release不可变。Release workflow已恢复active；run45877105396只走prebuilt_only打包发布路径，尚待完成，未触发源码编译/测试CI。此时实际生产仍旧.3自研.2，发行不冒称已安装。
+
+
+### 2026-11-27 R1.2收尾：2.25.4-ransub.2实际加载与公网唯一结算
+
+- 镜像run45877105396 success：仅publish-prebuilt-image成功，其余7源码相关作业全部skipped，Release恢复active。固定公开镜像4e74b33ef5c9cae7d38a05f948a151077589c3dd7ea1cb8bc4b9e24c680c6272/程序090bb3bebbef7f6e2b035ec4dd79bea4ba576a7b6926832e0efb6ca49460c071/应用源1c9955ba0389f699e190161e23e55fbe788b23b9匹配。
+- 02:42–02:43 HKT实际生产deploy/verify退出0：原POST系统在线更新200、SHA验证及旧backup保留；排空后升级、后台SIGTERM优雅重启、同镜像重建三阶段全部加载新程序。最终APP031a4be27939，原PGf30095818cb1/Redis5b796d6478e0不变；16账号/2组/1用户/1Key/499迁移保持，原优先调度关闭与120/300秒首输出配置未改。current=latest=2.25.4-ransub.2、has_update=false、warning=null，维护门已撤。
+- 停止旧进程后的完整切换备份database.cutover-27d20592dd74.dump/SHA c6e99a4001b2a8dbe01887408f04eeffc9a67077abf3183d90496d3627ff4e7c；两表专项diagnostics.cutover-27d20592dd74.dump为216589976B/SHA d0f7ace52a17c48096d53abf7369338ccfe0975b35063454ffb6f9b5d09ac7e3，耗时139472行、连接150624行。真实SQL复核两表均已退役、usage_billing_events仍在；其他历史未删，所有诊断/数据库/配置/程序和镜像回滚材料保留。旧账手工退役SQL未执行。
+- 公网完整public-smoke退出0/passed=true：真实登录/auth-me、16账号性能与timer、原流量/守护/禁用工单保持；退休4GET接口明确404。1440/390、中英总览、过滤/下钻/账号编辑预填/授权/工具计划预算入口、作品原沙箱、键盘和浏览器局部失败恢复通过；零pageerror/HTTP错误/配置写入，零自动付费检测。没有当前待对照轮次，只沿匹配源码fixture证明该状态，不伪造在线样本。
+- 新真实gpt-6.1-sol流式请求200、唯一response.completed和正文，无失败终态；含网络2.000秒（不是纯上游TTFT），client72b661af-384d-4662-a119-fcef2feb1b7e，唯一usage139546/上游9、输入53/输出5。独立SQL关联同请求恰好usage1/claim1/quote1/legacy_event0，canonical与wallet_debit及付款用户一致。此样本证明新版直接事务记账，不证明所有旧会话、缓存域或长期SLA。
+- 首张流量截图仍在loading，发现后补普通界面的aria-busy=false/无status/无alert/真实table与节点健康加载校验，未改生产DOM或伪造结果。其ui-only首轮因原生SSH255连接超时失败；读取公网200及已保存server-access连接立即成功，将同一ops/read-only入口改走原技能验证连接，主机密钥不放宽。最终ui-only退出0，截图目视复核真实150802条流量、图表和节点健康正常；未重复计费SSE。原失败日志保留，不宣称最初loading图证明已加载。
+- 原native SSH cleanup预览同报255，未进行该次删除。技能连接下重新核对/proc及容器挂载0引用、精确SHA后清最终候选和cutover字段170955183B，再以相同清理器核原.1已退出候选170909856B；累计341865039逻辑字节，cleanup均0/rollback_preserved=true。7个隔离演练容器/网络均回收；保留所有备份/正式制品/复用缓存，未全机prune。受宿主policy保护的首候选54247114B及历史scratch不改删、不换工具绕行。
+- 证据沿H:/Root/DevCache/evidence/sub2api-quality-evidence：upstream-v2254-{production-deploy,production-verify,production-cleanup,public-smoke,public-ui-loaded}.log、public-smoke.json、public-smoke-ui.json、live-diagnostic-backup.json、诊断回退JSON及中英双宽截图。R1.2明确范围完成；原28项20done/8部分保持，供应商来源/fast/缓存域、插件计量、完整混版及真实旧长流仍属原外部验收，凭据导入仍未执行。
