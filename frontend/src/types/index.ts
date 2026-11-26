@@ -2907,6 +2907,8 @@ export interface PelicanQuestion {
 }
 
 export interface PelicanTestConfig {
+  tool_call_token_budget?: number
+  tool_call_result?: ToolCallProbeResult
   prompt_mode?: 'custom' | 'random'
   pelican_question?: PelicanQuestion
   actual_prompt?: string
@@ -2918,7 +2920,7 @@ export interface PelicanTestConfig {
   trigger_source?: string
   availability?: AvailabilityPolicy
   quality?: QualityPolicy
-  question_kind?: 'candy' | 'pelican' | 'state_probe' | 'random_reasoning' | 'ciallo'
+  question_kind?: 'candy' | 'pelican' | 'state_probe' | 'random_reasoning' | 'ciallo' | 'tool_call'
   ciallo?: { template_version: string; judge_version: string; protocol?: string }
   // Result-only identity of a runtime-generated question.
   random_question?: { id: string; family: 'paths' | 'weighted_xor'; version: string }
@@ -2942,6 +2944,25 @@ export interface PelicanTestConfig {
   parallel_count: number
   model_id?: string
   model_ids?: string[]
+}
+
+export interface ToolCallProbeResult {
+  version: number
+  status: 'pass' | 'fail' | 'inconclusive' | 'deferred'
+  reason: string
+  protocol: string
+  model?: string
+  token_budget: number
+  observed_tokens: number
+  arguments_verified: boolean
+  result_verified: boolean
+  rounds: {
+    http_status: number
+    latency_ms: number
+    input_tokens: number | null
+    output_tokens: number | null
+    cached_tokens: number | null
+  }[]
 }
 
 export interface ScheduledTestPlan {

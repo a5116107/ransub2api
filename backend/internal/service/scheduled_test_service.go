@@ -128,6 +128,7 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 		}
 		cfg.QualityRestoreDiagnostic = nil
 		cfg.AvailabilityResult = nil
+		cfg.ToolCallResult = nil
 		cfg.QualityModelOutcomes = nil
 		cfg.QualityModelActions = nil
 		cfg.RandomQuestion = nil
@@ -143,6 +144,9 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 		cfg.QualityBatch = nil
 		cfg.PelicanQuestion = nil
 		cfg.ActualPrompt = ""
+		if err := validateToolCallPlan(plan); err != nil {
+			return time.Time{}, err
+		}
 		if err := validatePelicanPromptMode(cfg); err != nil {
 			return time.Time{}, err
 		}
@@ -189,7 +193,7 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 			plan.ModelID = models[0]
 		}
 		// 探针题型不需要题目文本；其余题型题目必填。
-		if isOpenAICodexStateProbePlan(cfg) || cfg.QuestionKind == QualityRandomQuestionKind || cfg.PromptMode == PelicanPromptModeRandom {
+		if isOpenAICodexStateProbePlan(cfg) || isToolCallPlan(cfg) || cfg.QuestionKind == QualityRandomQuestionKind || cfg.PromptMode == PelicanPromptModeRandom {
 			if len(cfg.Prompt) > 32000 || strings.TrimSpace(plan.ModelID) == "" || len(plan.ModelID) > 100 {
 				return time.Time{}, fmt.Errorf("probe model is required (maximum 32000/100 bytes)")
 			}
@@ -205,7 +209,7 @@ func nextPlanRun(plan *ScheduledTestPlan, now time.Time) (time.Time, error) {
 		if cfg.Availability != nil && plan.AutoRecover {
 			return time.Time{}, fmt.Errorf("availability tracking cannot use connectivity auto_recover")
 		}
-		if cfg.QuestionKind != "" && cfg.QuestionKind != "pelican" && !isQualityAnswerQuestion(cfg.QuestionKind) && cfg.QuestionKind != OpenAICodexStateProbeQuestionKind {
+		if cfg.QuestionKind != "" && cfg.QuestionKind != "pelican" && !isQualityAnswerQuestion(cfg.QuestionKind) && cfg.QuestionKind != OpenAICodexStateProbeQuestionKind && !isToolCallPlan(cfg) {
 			return time.Time{}, fmt.Errorf("invalid question kind")
 		}
 		// 同一账号同一时刻只允许一次探针，并行只会互相挤掉，直接禁止。

@@ -32,13 +32,14 @@
               <p>{{ card.record.modelId || '—' }} / {{ card.record.reasoningEffort || '—' }}</p>
               <p>{{ t('admin.accounts.pelicanTest.generatedAt') }}：{{ formatDate(card.record.startedAt) }}</p>
             </div>
-            <div class="mt-3 aspect-[4/3] overflow-hidden rounded-xl bg-gray-50">
-              <iframe v-if="card.record.html" :srcdoc="card.record.html" class="pointer-events-none h-full w-full border-0" tabindex="-1" sandbox="allow-scripts" referrerpolicy="no-referrer" :title="card.account.name" />
+            <div class="mt-3 overflow-hidden rounded-xl bg-gray-50" :class="card.record.toolCall ? '' : 'aspect-[4/3]'">
+              <ToolCallProbeCard v-if="card.record.toolCall" :result="card.record.toolCallResult" :model="card.record.modelId" />
+              <iframe v-else-if="card.record.html" :srcdoc="card.record.html" class="pointer-events-none h-full w-full border-0" tabindex="-1" sandbox="allow-scripts" referrerpolicy="no-referrer" :title="card.account.name" />
               <p v-else-if="!card.loaded && !card.loadError" class="p-4 text-sm text-gray-500">{{ t('common.loading') }}...</p>
               <pre v-else-if="card.record.output && !card.record.html" class="whitespace-pre-wrap break-words p-4 text-sm text-gray-800">{{ card.record.output }}</pre>
               <p v-else class="p-4 text-sm text-red-500">{{ card.loadError || card.record.error || t('admin.accounts.pelicanTest.invalidHtml') }}</p>
             </div>
-            <p v-if="card.record.error && !card.record.verdict" class="mt-2 line-clamp-2 break-words text-xs text-red-500">{{ card.record.error }}</p>
+            <p v-if="card.record.error && !card.record.verdict && !card.record.toolCall" class="mt-2 line-clamp-2 break-words text-xs text-red-500">{{ card.record.error }}</p>
           </div>
           <div class="border-t border-gray-100 px-4 py-3 text-sm text-primary-600 dark:border-dark-700">{{ t('admin.accounts.pelicanTest.preview') }}</div>
           <button type="button" class="absolute inset-0 z-10 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500" :aria-label="`${card.account.name} · ${t('admin.accounts.pelicanTest.preview')}`" @click="openRecord(card)" />
@@ -58,7 +59,8 @@
           <button type="button" class="btn btn-secondary" @click="selected = null">{{ t('common.close') }}</button>
         </header>
         <PelicanQuestionSnapshot :question="selected.record.pelicanQuestion" :actual-prompt="selected.record.actualPrompt" />
-        <iframe v-if="selected.record.html" :srcdoc="selected.record.html" class="min-h-0 w-full flex-1 border-0" sandbox="allow-scripts" referrerpolicy="no-referrer" :title="selected.account.name" />
+        <ToolCallProbeCard v-if="selected.record.toolCall" class="m-4 overflow-auto" :result="selected.record.toolCallResult" :model="selected.record.modelId" />
+        <iframe v-else-if="selected.record.html" :srcdoc="selected.record.html" class="min-h-0 w-full flex-1 border-0" sandbox="allow-scripts" referrerpolicy="no-referrer" :title="selected.account.name" />
         <p v-else-if="!selected.loaded && !selected.loadError" class="p-4">{{ t('common.loading') }}...</p>
         <pre v-else class="overflow-auto whitespace-pre-wrap p-4 text-sm">{{ detailText(selected) }}</pre>
       </div>
@@ -67,13 +69,14 @@
 </template>
 <script setup lang="ts">
 import PelicanQuestionSnapshot from './PelicanQuestionSnapshot.vue'
+import ToolCallProbeCard from './ToolCallProbeCard.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { scheduledTestsAPI } from '@/api/admin/scheduledTests'
 import type { PelicanHistoryResult } from '@/api/admin/scheduledTests'
 import { extractPelicanHtml } from '@/utils/pelicanHtml'
-import { isTextAnswerKind, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
-import type { Account, AccountListItem, PelicanQuestion, PelicanTestConfig, ScheduledTestResult } from '@/types'
+import { isTextAnswerKind, stateProbeVerdict, TOOL_CALL_QUESTION, type StateProbeVerdict } from '@/utils/intelligenceTest'
+import type { Account, AccountListItem, PelicanQuestion, PelicanTestConfig, ScheduledTestResult, ToolCallProbeResult } from '@/types'
 
 interface ManualRun {
   id?: string
@@ -99,6 +102,8 @@ interface ManualRecord {
   runs: ManualRun[]
 }
 interface DisplayRecord {
+  toolCall?: boolean
+  toolCallResult?: ToolCallProbeResult
   pelicanQuestion?: PelicanQuestion
   actualPrompt?: string
   source: 'manual' | 'scheduled'
@@ -145,10 +150,12 @@ function formatDate(value?: string) {
 }
 const verdictKeys: Record<StateProbeVerdict, string> = { healthy: 'verdictHealthy', degraded: 'verdictDegraded', inconclusive: 'verdictInconclusive' }
 function statusLabel(record: DisplayRecord) {
+  if (record.toolCall) return t(`admin.accounts.pelicanTest.tool.${record.toolCallResult?.status || 'inconclusive'}`)
   if (record.verdict) return t(`admin.accounts.pelicanTest.probe.${verdictKeys[record.verdict]}`)
   return t(record.status === 'success' ? 'admin.accounts.pelicanTest.success' : 'admin.accounts.pelicanTest.failed')
 }
 function statusClass(record: DisplayRecord) {
+  if (record.toolCall) return record.toolCallResult?.status === 'pass' ? 'text-emerald-600' : record.toolCallResult?.status === 'fail' ? 'text-red-500' : 'text-gray-500'
   if (record.verdict === 'inconclusive') return 'text-gray-500'
   if (record.verdict) return record.verdict === 'healthy' ? 'text-emerald-600' : 'text-red-500'
   return record.status === 'success' ? 'text-emerald-600' : 'text-red-500'
@@ -204,7 +211,7 @@ function manualCards(server: PelicanHistoryResult[]): Card[] {
   return [...results.values()]
 }
 function serverRecord(result: ScheduledTestResult): DisplayRecord {
-  return { pelicanQuestion: result.pelican_config?.pelican_question, actualPrompt: result.pelican_config?.actual_prompt || result.pelican_config?.prompt, source: 'scheduled', startedAt: result.started_at, durationMs: result.latency_ms,
+  return { toolCall: result.pelican_config?.question_kind === TOOL_CALL_QUESTION, toolCallResult: result.pelican_config?.tool_call_result, pelicanQuestion: result.pelican_config?.pelican_question, actualPrompt: result.pelican_config?.actual_prompt || result.pelican_config?.prompt, source: 'scheduled', startedAt: result.started_at, durationMs: result.latency_ms,
     modelId: result.pelican_config?.model_id, reasoningEffort: result.pelican_config?.reasoning_effort,
     status: result.status, verdict: stateProbeVerdict(result) ?? undefined, output: result.response_text || '',
     html: isTextAnswerKind(result.pelican_config?.question_kind) ? '' : extractPelicanHtml(result.response_text || ''), error: result.error_message }

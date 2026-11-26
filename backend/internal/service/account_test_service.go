@@ -411,6 +411,12 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err != nil || account == nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	if probe, _ := ctx.Value(toolCallProbeKey{}).(*ToolCallProbeResult); probe != nil {
+		if reason := s.toolCallUnsupportedReason(ctx, account, modelID); reason != "" {
+			probe.Status, probe.Reason = "deferred", reason
+			return s.sendErrorAndEnd(c, reason)
+		}
+	}
 	if expected, ok := ctx.Value(oauth429ExecutionKey{}).(*oauth429Execution); ok {
 		if account.ID != expected.AccountID || !OAuth429RequestModelSupported(account, modelID, expected.Endpoint, expected.CompactModel) || ResolveOAuth429TargetModel(account, modelID, expected.Endpoint, expected.CompactModel) != expected.Model || account.IsCredentialShadow() || account.IsSIWCEnabled() || account.IsExcelBPSEnabled() || account.IsPrismBrowserEnabledForModel(modelID) || isOpenAIImageModel(expected.Model) {
 			return s.sendErrorAndEnd(c, "Independent test target route is unavailable")
@@ -1191,6 +1197,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
+	}
+
+	if probe, _ := ctx.Value(toolCallProbeKey{}).(*ToolCallProbeResult); probe != nil {
+		return s.runOpenAIToolCallProbe(c, req, account, proxyURL, probe)
 	}
 
 	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true, payloadBytes)

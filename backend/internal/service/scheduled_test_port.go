@@ -7,8 +7,11 @@ import (
 
 // PelicanTestConfig stores intelligence test inputs; a missing kind preserves legacy HTML plans.
 type PelicanTestConfig struct {
-	Availability *AvailabilityPolicy `json:"availability,omitempty"`
-	Ciallo       *CialloEvidence     `json:"ciallo,omitempty"`
+	// Opt-in, per-run actual-usage budget; not an estimated or daily budget.
+	ToolCallTokenBudget int                  `json:"tool_call_token_budget,omitempty"`
+	ToolCallResult      *ToolCallProbeResult `json:"tool_call_result,omitempty"`
+	Availability        *AvailabilityPolicy  `json:"availability,omitempty"`
+	Ciallo              *CialloEvidence      `json:"ciallo,omitempty"`
 	// Optional display name stored in the existing configuration JSON.
 	RuleName string `json:"rule_name,omitempty"`
 	// Filled only on saved result snapshots, never used to configure a rule.

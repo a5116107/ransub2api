@@ -248,7 +248,8 @@
                 <span class="text-sm font-medium text-gray-800 dark:text-gray-100">{{ t('admin.accounts.pelicanTest.output') }} {{ index + 1 }}</span>
               </div>
               <div class="flex items-center gap-1">
-                <span v-if="run.verdict" data-testid="run-verdict" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="verdictStyle(run.verdict).badge">{{ verdictLabel(run.verdict) }}</span>
+                <span v-if="run.questionKind === TOOL_CALL_QUESTION" class="text-xs text-gray-600 dark:text-gray-300">{{ t(`admin.accounts.pelicanTest.tool.${run.toolCallResult?.status || 'inconclusive'}`) }}</span>
+                <span v-else-if="run.verdict" data-testid="run-verdict" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="verdictStyle(run.verdict).badge">{{ verdictLabel(run.verdict) }}</span>
                 <span v-else-if="run.status === 'running'" class="text-xs text-amber-600 dark:text-amber-300">{{ t('admin.accounts.pelicanTest.runningShort') }}</span>
                 <span v-else-if="run.status === 'success'" class="text-xs text-emerald-600 dark:text-emerald-300">{{ t('admin.accounts.pelicanTest.success') }}</span>
                 <span v-else class="text-xs text-red-600 dark:text-red-300">{{ t('admin.accounts.pelicanTest.failed') }}</span>
@@ -262,10 +263,11 @@
               <div>{{ t('admin.accounts.pelicanTest.generatedAt') }}：{{ run.startedAt ? formatDate(run.startedAt) : '—' }}</div>
               <div>{{ t('admin.accounts.pelicanTest.duration') }}：{{ run.durationMs == null ? '—' : `${(run.durationMs / 1000).toFixed(1)} s` }}</div>
             </div>
-            <div v-if="run.html" class="aspect-[4/3] bg-white dark:bg-white">
+            <ToolCallProbeCard v-if="run.questionKind === TOOL_CALL_QUESTION" class="m-3" :result="run.toolCallResult" :model="run.modelId" />
+            <div v-else-if="run.html" class="aspect-[4/3] bg-white dark:bg-white">
               <iframe :srcdoc="run.html" class="h-full w-full border-0" sandbox="allow-scripts" referrerpolicy="no-referrer" :title="`${t('admin.accounts.pelicanTest.output')} ${index + 1}`"></iframe>
             </div>
-            <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words border-t border-gray-200 bg-gray-950 p-3 text-xs leading-relaxed text-gray-200 dark:border-dark-600">{{ run.output || run.error || t('admin.accounts.pelicanTest.waiting') }}</pre>
+            <pre v-if="run.questionKind !== TOOL_CALL_QUESTION" class="max-h-48 overflow-auto whitespace-pre-wrap break-words border-t border-gray-200 bg-gray-950 p-3 text-xs leading-relaxed text-gray-200 dark:border-dark-600">{{ run.output || run.error || t('admin.accounts.pelicanTest.waiting') }}</pre>
           </article>
         </div>
       </div>
@@ -300,7 +302,8 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { questionPrompt, questionContract, isTextAnswerKind, stateProbeVerdict, STATE_PROBE_QUESTION, type IntelligenceQuestion, type StateProbeVerdict } from '@/utils/intelligenceTest'
+import { questionPrompt, questionContract, isTextAnswerKind, stateProbeVerdict, STATE_PROBE_QUESTION, TOOL_CALL_QUESTION, type IntelligenceQuestion, type StateProbeVerdict } from '@/utils/intelligenceTest'
+import ToolCallProbeCard from './ToolCallProbeCard.vue'
 import { useI18n } from 'vue-i18n'
 import { extractPelicanHtml as extractHtml } from '@/utils/pelicanHtml'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -337,6 +340,7 @@ const testModes: TestMode[] = ['question', 'probe', 'modeltrace']
 
 type RunStatus = 'running' | 'success' | 'error'
 interface TestRun {
+  toolCallResult?: PelicanTestConfig['tool_call_result']
   questionKind?: PelicanTestConfig['question_kind']
   // 定时探针结果的判定；手动题目测试没有。
   verdict?: StateProbeVerdict
@@ -494,6 +498,7 @@ function verdictStyle(verdict: OpenAICodexStateVerdict) {
 }
 
 function scheduledStatus(result: ScheduledTestResult) {
+  if (result.pelican_config?.question_kind === TOOL_CALL_QUESTION) return { label: t(`admin.accounts.pelicanTest.tool.${result.pelican_config.tool_call_result?.status || 'inconclusive'}`), class: result.pelican_config.tool_call_result?.status === 'pass' ? 'text-emerald-600' : result.pelican_config.tool_call_result?.status === 'fail' ? 'text-red-500' : 'text-gray-500' }
   const verdict = stateProbeVerdict(result)
   if (verdict === 'healthy') return { label: verdictLabel(verdict), class: 'text-emerald-600' }
   if (verdict === 'degraded') return { label: verdictLabel(verdict), class: 'text-red-500' }
@@ -555,7 +560,7 @@ function editSchedule(config: PelicanTestConfig, model: string) {
   if (running.value) return
   modelId.value = model
   // Server-generated questions belong to quality rules, not manual test inputs.
-  if (config.question_kind === STATE_PROBE_QUESTION || config.question_kind === 'random_reasoning' || config.question_kind === 'ciallo') return
+  if (config.question_kind === STATE_PROBE_QUESTION || config.question_kind === TOOL_CALL_QUESTION || config.question_kind === 'random_reasoning' || config.question_kind === 'ciallo') return
   questionKind.value = config.question_kind || 'pelican'
   prompt.value = config.prompt
   promptMode.value = config.prompt_mode || 'custom'
@@ -577,7 +582,7 @@ function previewScheduled(result: ScheduledTestResult) {
   const config = result.pelican_config
   if (config) editSchedule(config, config.model_id || modelId.value)
   const html = isTextAnswerKind(config?.question_kind) ? '' : extractHtml(result.response_text)
-  runs.value = [{ id: `scheduled-${result.id}`, questionKind: config?.question_kind || 'pelican', verdict: stateProbeVerdict(result) ?? undefined, status: result.status === 'success' ? 'success' : 'error', output: result.response_text, html, error: result.error_message,
+  runs.value = [{ id: `scheduled-${result.id}`, toolCallResult: config?.tool_call_result, questionKind: config?.question_kind || 'pelican', verdict: stateProbeVerdict(result) ?? undefined, status: result.status === 'success' ? 'success' : 'error', output: result.response_text, html, error: result.error_message,
     source: 'scheduled', startedAt: result.started_at, finishedAt: result.finished_at,
     durationMs: result.latency_ms, modelId: config?.model_id, reasoningEffort: config?.reasoning_effort
   }]

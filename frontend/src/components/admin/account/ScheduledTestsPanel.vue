@@ -103,7 +103,7 @@
           <div class="flex items-end">
             <div>
               <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                <Toggle v-model="newPlan.auto_recover" :disabled="!!newPelican.availability" />
+                <Toggle v-model="newPlan.auto_recover" :disabled="!!newPelican.availability || newPelican.question_kind === TOOL_CALL_QUESTION" />
                 {{ t('admin.scheduledTests.autoRecover') }}
               </label>
               <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
@@ -322,7 +322,7 @@
               <div class="flex items-end">
                 <div>
                   <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                    <Toggle v-model="editForm.auto_recover" :disabled="!!editPelican.availability" />
+                    <Toggle v-model="editForm.auto_recover" :disabled="!!editPelican.availability || editPelican.question_kind === TOOL_CALL_QUESTION" />
                     {{ t('admin.scheduledTests.autoRecover') }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
@@ -402,6 +402,7 @@
                   </span>
                 </div>
 
+                <ToolCallProbeCard v-if="result.pelican_config?.question_kind === TOOL_CALL_QUESTION" class="mt-2" :result="result.pelican_config.tool_call_result" :model="result.pelican_config.model_id" />
                 <div v-if="pelicanConfig" class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                   {{ t('admin.accounts.pelicanTest.sourceScheduled') }} · {{ result.pelican_config?.model_id || '—' }} / {{ result.pelican_config?.reasoning_effort || '—' }}
                 </div>
@@ -484,7 +485,8 @@ import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime } from '@/utils/format'
 import PelicanTestFields from './PelicanTestFields.vue'
-import { STATE_PROBE_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
+import ToolCallProbeCard from './ToolCallProbeCard.vue'
+import { STATE_PROBE_QUESTION, TOOL_CALL_QUESTION, stateProbeVerdict, type StateProbeVerdict } from '@/utils/intelligenceTest'
 import { validAvailability } from '@/utils/availability'
 import type { PelicanTestConfig, ScheduledTestPlan, ScheduledTestResult } from '@/types'
 
@@ -498,6 +500,7 @@ const probeVerdictClass: Record<StateProbeVerdict, string> = {
   inconclusive: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
 }
 const statusClass = (result: ScheduledTestResult) => {
+  if (result.pelican_config?.question_kind === TOOL_CALL_QUESTION && result.pelican_config.tool_call_result?.status !== 'pass' && result.pelican_config.tool_call_result?.status !== 'fail') return probeVerdictClass.inconclusive
   const verdict = stateProbeVerdict(result)
   if (verdict) return probeVerdictClass[verdict]
   if (result.status === 'success') return 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-400'
@@ -505,6 +508,7 @@ const statusClass = (result: ScheduledTestResult) => {
   return 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400'
 }
 const statusLabel = (result: ScheduledTestResult) => {
+  if (result.pelican_config?.question_kind === TOOL_CALL_QUESTION) return t(`admin.accounts.pelicanTest.tool.${result.pelican_config.tool_call_result?.status || 'inconclusive'}`)
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(`admin.accounts.pelicanTest.probe.${probeVerdictLabel[verdict]}`)
   if (result.status === 'success') return t('admin.scheduledTests.success')
@@ -572,10 +576,13 @@ const newPlan = reactive({
 })
 
 function pelicanAvailabilityValid(config: PelicanTestConfig) {
+  if (config.question_kind === TOOL_CALL_QUESTION) return !config.availability && !config.quality && config.parallel_count === 1 && Number.isInteger(config.tool_call_token_budget ?? 1024) && (config.tool_call_token_budget ?? 1024) >= 1 && (config.tool_call_token_budget ?? 1024) <= 1000000
   return validAvailability(config.availability, config.question_kind !== STATE_PROBE_QUESTION && config.test_channel !== 'bps')
 }
 watch(() => !!newPelican.value.availability, enabled => { if (enabled) newPlan.auto_recover = false }, { flush: 'sync' })
 watch(() => !!editPelican.value.availability, enabled => { if (enabled) editForm.auto_recover = false }, { flush: 'sync' })
+watch(() => newPelican.value.question_kind, kind => { if (kind === TOOL_CALL_QUESTION) newPlan.auto_recover = false }, { flush: 'sync' })
+watch(() => editPelican.value.question_kind, kind => { if (kind === TOOL_CALL_QUESTION) editForm.auto_recover = false }, { flush: 'sync' })
 
 const resetNewPlan = () => {
   newPlan.model_id = props.defaultModel || ''

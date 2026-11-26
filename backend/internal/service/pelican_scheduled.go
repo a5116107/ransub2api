@@ -37,6 +37,9 @@ const (
 
 func (s *AccountTestService) RunPelicanBackground(ctx context.Context, accountID int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
 	ctx = context.WithValue(ctx, qualityProbeContextKey{}, true)
+	if isToolCallPlan(cfg) {
+		return s.runToolCallBackground(ctx, accountID, model, cfg)
+	}
 	// 探针题型不下发题目，直接走门票探针。
 	if isOpenAICodexStateProbePlan(cfg) {
 		result, err := s.runOpenAICodexStateProbeScheduled(ctx, accountID, model, cfg)
@@ -436,7 +439,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 			return true // Native deletion cascaded results; do not write them again.
 		}
 	}
-	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) {
+	if succeeded && plan.AutoRecover && plan.PelicanConfig.Quality == nil && plan.PelicanConfig.Availability == nil && !isBuiltinCandyPlan(plan.PelicanConfig) && !isOpenAICodexStateProbePlan(plan.PelicanConfig) && !isToolCallPlan(plan.PelicanConfig) {
 		s.tryRecoverAccount(saveCtx, plan.AccountID, plan.ID)
 	}
 	if plan.PelicanConfig.Quality != nil && isBuiltinCandyPlan(plan.PelicanConfig) && applyTriggeredQuality &&

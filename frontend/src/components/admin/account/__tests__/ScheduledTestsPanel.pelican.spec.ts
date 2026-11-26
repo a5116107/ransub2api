@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import ScheduledTestsPanel from '../ScheduledTestsPanel.vue'
 import { adminAPI } from '@/api/admin'
-vi.mock('vue-i18n', async () => ({ ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'), useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', async () => ({ ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'), useI18n: () => ({ t: (key: string) => key, te: () => true }) }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn() }) }))
 vi.mock('@/api/admin', () => ({ adminAPI: { scheduledTests: { listByAccount: vi.fn(), listResults: vi.fn(), getResult: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() } } }))
 const config = { prompt: 'draw a pelican', reasoning_effort: 'medium', parallel_count: 2 }
@@ -103,6 +103,25 @@ describe('shared scheduled test plans for Pelican', () => {
     await vm.handleCreate()
     expect(adminAPI.scheduledTests.create).toHaveBeenCalledWith(expect.not.objectContaining({ pelican_config: expect.anything() }))
     expect(vm.newPlan.max_results).toBe('100')
+    wrapper.unmount()
+  })
+  it('persists opt-in tool tests with no recovery, and keeps incomplete results neutral', async () => {
+    const tool = { prompt: '', question_kind: 'tool_call', reasoning_effort: 'low', parallel_count: 1, tool_call_token_budget: 1024 }
+    vi.mocked(adminAPI.scheduledTests.listByAccount).mockResolvedValue([{ ...plan, auto_recover: false, pelican_config: tool }] as any)
+    vi.mocked(adminAPI.scheduledTests.listResults).mockResolvedValue([{ id: 11, plan_id: 4, status: 'failed', error_message: 'token_budget_reached', pelican_config: { ...tool, model_id: 'gpt-6-astra', tool_call_result: { status: 'deferred', reason: 'token_budget_reached', rounds: [], token_budget: 1024, observed_tokens: 12 } } }] as any)
+    const wrapper = mountPanel(); await flushPromises()
+    const vm = wrapper.vm as any
+    vm.newPlan.auto_recover = true
+    vm.newPelican = tool
+    expect(vm.newPlan.auto_recover).toBe(false)
+    await vm.handleCreate()
+    expect(adminAPI.scheduledTests.create).toHaveBeenLastCalledWith(expect.objectContaining({ auto_recover: false, pelican_config: tool }))
+    expect(wrapper.get('[data-testid="tool-verdict"]').text()).toBe('admin.accounts.pelicanTest.tool.deferred')
+    expect(wrapper.get('[data-testid="result-status"]').classes()).toContain('text-gray-600')
+    vi.mocked(adminAPI.scheduledTests.create).mockClear()
+    vm.newPelican = { ...tool, tool_call_token_budget: 0 }
+    await vm.handleCreate()
+    expect(adminAPI.scheduledTests.create).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

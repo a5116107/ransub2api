@@ -13,12 +13,13 @@ export function questionContract(kind: IntelligenceQuestion): string {
 
 // 定时测试 / 质量规则里的探针题型：不下发题目，后端跑一次门票探针判满血/降智。
 export const STATE_PROBE_QUESTION = 'state_probe'
+export const TOOL_CALL_QUESTION = 'tool_call'
 export const DEFAULT_STATE_PROBE_CRON = '*/2 * * * *'
 export type StateProbeVerdict = 'healthy' | 'degraded' | 'inconclusive'
 
 // 结果是纯文本（不是 HTML 动画）的题型。
 export function isTextAnswerKind(kind?: string): boolean {
-  return kind === 'candy' || kind === 'ciallo' || kind === 'random_reasoning' || kind === STATE_PROBE_QUESTION
+  return kind === 'candy' || kind === 'ciallo' || kind === 'random_reasoning' || kind === STATE_PROBE_QUESTION || kind === TOOL_CALL_QUESTION
 }
 
 // 与后端约定：满血 = success；降智 = failed + state_degraded；其余失败都是无法判断。

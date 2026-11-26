@@ -123,14 +123,21 @@ func TestExcelBPSCacheScopeUsesEffectiveRouteAndModel(t *testing.T) {
 			forward := func(account *Account, model, tier string, group int64) (string, string) {
 				t.Helper()
 				upstream.resp = &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(excelBPSToolPolicyResponse))}
-				body, err := json.Marshal(map[string]any{"model": model, "stream": false, "input": "fixture", "service_tier": tier})
+				payload := map[string]any{"model": model, "stream": false, "input": "fixture"}
+				// Omission is the default tier. An explicit empty string is invalid
+				// under the current wire contract and never reaches cache routing.
+				if tier != "" {
+					payload["service_tier"] = tier
+				}
+				body, err := json.Marshal(payload)
 				require.NoError(t, err)
-				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 				c.Request.Header.Set("session_id", "bps-cache-"+t.Name())
 				c.Set("api_key", &APIKey{ID: 42, UserID: 7, GroupID: &group})
 				_, err = svc.Forward(context.Background(), c, account, body)
-				require.NoError(t, err)
+				require.NoError(t, err, "response: %s", recorder.Body.String())
 				require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
 				cache := gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String()
 				task := gjson.GetBytes(upstream.lastBody, "metadata.task_id").String()
