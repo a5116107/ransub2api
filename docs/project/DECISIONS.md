@@ -2620,3 +2620,22 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新实例启动以来22条最小落库时序后验：21条200/success/completed且无断连/写错；usage135517为200/client_disconnected/completed，downstream_error/client_disconnect=true。原样保留pending-comparison-post-observe.json，不将all_observed_success=false改报全绿，不据单一标记推断断连来源或所有会话SLA；本轮测试请求135529明确完整成功。
 - cleanup --dry-run先核两个文件SHA及0容器挂载/进程exe/fd引用；正式cleanup退出0，删除candidate-aeabbcbc46f7.sub2api 1064300704bytes、cutover-fields-6dada4518ae3.json 85983bytes，共1064386687逻辑bytes，旧程序/数据库回滚hash复核通过、health=ok。本地已退出Linux测试程序7600766bytes精确删除，最终WORK自动清理；正式归档/镜像/备份和最小证据保留，不冒称实际磁盘分配量。历史宿主拒删scratch保持原路径，未换工具或移动重试。
 - D7.1/D8.1完整子任务验收，原STATE/设计原位更新并移除过时生产版本/候选等待；原28项20done/8部分保持，新增子项不冒算原父任务完成。D2/D4外部unknown关联/模型fast倍率来源、D3首批非文本范围、D5/D6可信缓存域与净收益、D7完整解释、D8完整混版和D9旧Mac/BPS已输出长流等仍按原验收及责任方保留。
+
+
+### 2026-11-26 D8.2：固定发行包的并行管理兼容与拒绝证据
+
+- 在原local-rehearse中增加显式--overlap-config，复用原启动/API/退出/清理实现，分别寻址主节点和旧peer，不建第二套部署工具。两进程共用隔离PG/Redis，无公开端口或供应商出站；逐实例核对真实/proc/1/exe哈希、独立容器ID和双节点存活。读取真实settings JSON，不用新服务GET的默认值冒充旧字段仍存在；验证旧节点保存、新节点兼容保存、两个并发写者及旧节点账号编辑后的凭据/extra/倍率/并发/暂停监测字段。
+- 新增5项能力用例在原实现真实缺失时失败，随后通过；另增PGDATA用例原失败后修复。PostgreSQL明确使用父目录tmpfs和PGDATA=/var/lib/postgresql/rehearsal，兼容18默认布局变化，不依赖镜像默认数据卷。补齐已有peer名保留检查；原清理仍按捕获ID/标签，不吞掉未知Docker错误或错误拥有者。最终Linux发行工具84项通过/0失败/0跳过（其中新增工具闭环9项），Windows最初目标用例缺接口的错误和PGDATA红测原样保留，不称环境错误为业务红测。
+- 本地Docker只读version在12秒界内超时，未重启引擎/清卷；复用已保存原生SSH严格校验连接，在hk2隔离容器运行同一CLI。第一轮因只带工具源码、没有CLI要求的.goreleaser配置且cwd不对，在创建容器前失败；补带原两份配置并以同一scratch为cwd，保留mixed-version-missing-config.log。不是改发布校验或跳过来源验证。
+- 已保存发行包.1(a9a5fe1202dc/程序0a88e4fa)与.2(aeabbcbc46f7/程序279415426b84)组合通过：新建库493条迁移保持，旧/新管理节点同时存活、28字段检查、两次并发保存保留cache_weight=29和target_tps=53、原账号受保护字段保持；随后旧版回退和重升幂等。新建库493是此fixture实际迁移集，不拿生产497条历史记录改报493。结果mixed-version-current-pair.log，scope=priority_configuration_and_account_fields，mixed_version_isolation_verified仍false。
+- 旧2.21.0-ransub.9(de8b86ed8916/程序c8cec584)与.2组合真实失败：旧节点启动在新版schema后，首次旧节点保存清掉cache_weight；结果config_overlap.status=incompatible/failed_stage=baseline_save/changed_fields=[cache_weight]，CLI退出1。原失败保留mixed-version-legacy-pair.log，不降低断言或重写已发行旧包。旧客户端经过新服务的兼容保存与真实旧二进制不同；跨该旧版仍须排空并停旧写者，生产当前仅.2未受影响。此验收可拒绝不安全组合，不宣称生产已加所有旧节点的运行时版本围栏。
+- 混版核心release_rehearsal.py执行源摘要09839e354ea8b07c426ad4b3fcd7294c5949c32931f557fceb47df0f7a7a475d与最终核心实现匹配；之后release_matrix只新增独立工具验收子命令，不改混版实现，单元/CLI注册全量另验。两个组合共14个容器/网络退出回收；远端/opt/sub2api/deploy/.rehearsal-mixed-config普通15文件/1064370006bytes、3条指向既存归档的符号链接，在核对结果、来源hash、挂载/进程0引用后删除。3个归档目标删除后再校验SHA仍一致，实际生产程序hash保持。临时本地mixed-config-run.py 2256bytes经引用核对删除；最小证据保留既有evidence目录，不碰历史拒删scratch/共享缓存/回滚材料。
+
+### 2026-11-26 D3.1：用户确认首批工具调用、两轮真实生产验收
+
+- 用户明确选择“先验收现有OpenAI上游的工具调用，模型沿用当前主力模型”。本轮范围是Responses HTTP函数调用两轮业务链路及记账/会话证据，不自动修改监测规则、调度或把文本检测通过推广为工具通过；图像/音视频仍未扩展。独立自动工具监测、面板结果和后续策略接入仍属于D3父验收，非本轮已完成项。
+- 原发行CLI增加local-tool-smoke，Token只从受保护stdin JSON读取，不入参数/文件/日志。固定纯本地add_numbers(7,11)，无shell/文件/外部工具执行；最多两笔物理请求、失败不自动重发、每轮max_output_tokens=512。分别严格核对唯一完成终态/完整工具arguments/call_id回填/第二轮18答案，并保留同模型、Session-Id、prompt_cache_key及所需密文历史（仅内存）。文本答案/参数缺失或错误/失败、截断、重复终态/额外调用均不当成功；心跳不延长显式90秒流消费预算，底层读取另受socket超时约束。只保存上游实际回传usage，不保存转录或密文历史。
+- 第一轮urllib默认User-Agent遇HTTPError；本地外层捕获因子进程Windows编码不匹配又报解码错误，原结果文件已保存，未据此重发。只读查询未发现该ID用量/关联应用日志；无计费健康对照证实默认urllib请求被Cloudflare403，requests/SOCKS及明确RanSub2API-Tool-Verification/1.0身份均200。为验证工具设置明确身份并补齐HTTP错误status/server，不改服务或上游健康结论；原tool-roundtrip-edge-blocked.json及诊断保留。子进程显式UTF-8后按变更后的请求重新执行，不把此边缘失败认作模型降智/工具能力失败，也不声称仅凭无用量证明没有任何外部费用。
+- 最终公网gpt-6.1-sol两轮200，每轮唯一response.completed。第一轮有完整function_call_arguments.delta/done，严格参数7和11；第二轮回填结果并得到18文本delta/完成。耗时2.844及2.734秒（含本机网络），上游usage分别输入147/输出22、输入186/输出5。client IDs 180af662-b369-42ab-ab06-f8497a94ca90和8fcc2bd0-9253-4a66-97c5-0be757aa014b，分别唯一关联usage135763/135764，均上游账号9、下游Key1；落库时序均200/success/completed，client_disconnect/downstream_error均false。成功后只读查账，不再发计费请求。
+- 真实生产仍2.25.2-ransub.2/aeabbcbc46f7/程序279415426b848c81218b16c70c76806d734c2f0af12a7fa09d8cd7bb3f920a84；APP894da3b1a062、PGf30095818cb1、Redis5b796d6478e0不变，16账号/2组/1用户/1Key/497迁移保持。两轮完整成功及同账号证明本次工具协议/亲和/唯一记账，不证明供应商智力、真实模型身份、缓存命中率、其他能力或长期SLA。
+- 本轮只变更.github/release-tools与文档，业务源码对v2.25.2-ransub.2零差异；不重复构建/发行/重启未变程序。Linux最终84个工具测试通过，原源码/命令及失败证据保留；不运行CI。原28项20done/8部分不变，D8.2和D3.1按各自限定验收完成，D3自动工具监测接入仍开放，D2/D4及缓存/旧长流等原父验收未被子结果替代。

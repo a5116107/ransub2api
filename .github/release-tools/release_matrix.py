@@ -398,11 +398,19 @@ def main():
     p = commands.add_parser('local-rehearse')
     for arg in ('baseline', 'candidate', 'candidate-sha', 'scratch', 'output'):
         p.add_argument('--' + arg, required=True)
+    p.add_argument('--overlap-config', action='store_true', help='Also verify concurrent old/new control-plane writes; does not authorize mixed traffic')
     p.add_argument('--runtime-image', default='python:3.11-slim')
     p.add_argument('--postgres-image', default='postgres:17-alpine')
     p.add_argument('--redis-image', default='redis:7-alpine')
     from release_rehearsal import local_rehearse
     p.set_defaults(run=lambda args: local_rehearse(args, verify, sha256))
+    p = commands.add_parser('local-tool-smoke', help='Explicit paid two-turn tool check; reads api_key JSON from stdin')
+    p.add_argument('--base-url', required=True)
+    p.add_argument('--model', required=True)
+    p.add_argument('--proxy')
+    p.add_argument('--output', required=True)
+    from openai_tool_roundtrip import local_tool_smoke
+    p.set_defaults(run=local_tool_smoke)
     args = parser.parse_args()
     args.run(args)
 

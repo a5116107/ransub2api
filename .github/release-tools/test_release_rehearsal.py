@@ -68,6 +68,23 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.preflight()
         docker.assert_not_called()
 
+    def test_existing_overlap_peer_is_preserved_before_creation(self):
+        self.args.overlap_config = True
+        run = rehearsal.Rehearsal(self.args)
+        def inspect(*args, **kwargs):
+            if args[:2] == ('context', 'inspect'):
+                return subprocess.CompletedProcess([], 0, 'unix:///var/run/docker.sock', '')
+            if args[:2] == ('image', 'inspect'):
+                return subprocess.CompletedProcess([], 0, '', '')
+            if args[-1] == run.prefix + '-peer':
+                return subprocess.CompletedProcess([], 0, 'existing-peer', '')
+            return subprocess.CompletedProcess([], 1, '', 'No such object')
+        with patch.dict(os.environ, {'DOCKER_HOST': ''}), patch.object(run, 'docker', side_effect=inspect), \
+                patch.object(run, 'create') as create:
+            with self.assertRaisesRegex(RuntimeError, 'owner recovery.*peer'):
+                run.preflight()
+        create.assert_not_called()
+
     def test_cleanup_preserves_resource_with_different_owner(self):
         run = rehearsal.Rehearsal(self.args)
         run.resources = [('container', 'c' * 64)]
@@ -94,6 +111,98 @@ class ReleaseRehearsalTest(unittest.TestCase):
         payload = json.loads(call.kwargs['input'])
         self.assertEqual(payload['headers']['Authorization'], 'Bearer synthetic-token')
         self.assertIn('http://127.0.0.1:8080', call.args[-1])
+
+    def test_api_can_address_peer_without_changing_primary(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        reply = json.dumps({'status': 200, 'data': {'code': 0, 'data': {'saved': True}}})
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, reply, '')) as docker:
+            self.assertEqual(run.api('GET', '/fixture', app='d' * 64), {'saved': True})
+        self.assertEqual(docker.call_args.args[:3], ('exec', '-i', 'd' * 64))
+        self.assertEqual(run.app, 'c' * 64)
+
+    def test_peer_start_preserves_primary_and_checks_its_own_binary(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        run.result['baseline_binary_sha256'] = 'old-binary-digest'
+        replies = [{'status': 'ok'}, {'access_token': 'synthetic-token'}, {'required': False}]
+        with patch.object(run, 'create', return_value='d' * 64) as create, \
+                patch.object(run, 'api', side_effect=replies) as api, \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'old-binary-digest', '')):
+            run.start_app(run.baseline, 'baseline_overlap', name='peer')
+        self.assertEqual(run.app, 'c' * 64)
+        self.assertIn(run.prefix + '-peer', create.call_args.args)
+        self.assertTrue(all(call.kwargs['app'] == 'd' * 64 for call in api.call_args_list))
+        self.assertEqual(run.result['stages'][-1]['loaded_sha256'], 'old-binary-digest')
+
+    def test_postgres_data_uses_explicit_tmpfs_directory_across_image_versions(self):
+        run = rehearsal.Rehearsal(self.args)
+        with patch.object(run, 'create', return_value='c' * 64) as create, \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+                patch.object(run, 'start_app', side_effect=RuntimeError('stop after backing services')):
+            with self.assertRaisesRegex(RuntimeError, 'stop after backing services'):
+                run.exercise()
+        database = create.call_args_list[1].args
+        self.assertIn('/var/lib/postgresql:rw,size=1073741824', database)
+        self.assertIn('PGDATA=/var/lib/postgresql/rehearsal', database)
+
+    def test_overlap_cleanup_stops_only_captured_peer(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        run.resources = [('container', run.app), ('container', 'd' * 64)]
+        with patch.object(run, 'docker') as docker:
+            run.stop_app('d' * 64)
+        self.assertEqual(docker.call_args_list[0].args, ('stop', '--time', '20', 'd' * 64))
+        self.assertEqual(run.resources, [('container', run.app)])
+        self.assertEqual(run.app, 'c' * 64)
+
+    def overlap_fixture(self, drop_candidate_field=False):
+        run = rehearsal.Rehearsal(self.args)
+        run.app, run.db, run.redis = 'c' * 64, 'e' * 64, 'f' * 64
+        stored = {'enabled': False, 'preserve_session_affinity': True, 'cache_weight': 17,
+                  'target_tps': 47, 'max_load_percent': 80}
+        legacy_fields = set(stored) - ({'cache_weight'} if drop_candidate_field else set())
+        def start(*args, **kwargs):
+            run.resources.append(('container', 'd' * 64))
+            run.result['stages'].append({'container_id': 'd' * 64})
+            return 'synthetic-old-token'
+        def api(method, path, body=None, token=None, *, app=None):
+            if method == 'PUT' and 'priority-scheduling' in path:
+                if drop_candidate_field and app == 'd' * 64:
+                    stored.pop('cache_weight', None)
+                stored.update(body)
+                return dict(stored)
+            if 'priority-scheduling' in path:
+                return dict(stored)
+            return {'status': 'ok'}
+        def sql(query):
+            return json.dumps(stored)
+        return run, stored, legacy_fields, start, api, sql
+
+    def test_overlap_detects_old_writer_erasing_new_fields_and_cleans_peer(self):
+        run, stored, fields, start, api, sql = self.overlap_fixture(True)
+        with patch.object(run, 'start_app', side_effect=start), patch.object(run, 'api', side_effect=api), \
+                patch.object(run, 'sql', side_effect=sql), patch.object(run, 'snapshot', return_value='original'), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'true', '')):
+            with self.assertRaisesRegex(RuntimeError, 'baseline_save.*cache_weight'):
+                run.exercise_config_overlap('/api/v1/admin/priority-scheduling/config', 1, 'original', fields)
+        overlap = run.result['config_overlap']
+        self.assertEqual(overlap['status'], 'incompatible')
+        self.assertEqual(overlap['changed_fields'], ['cache_weight'])
+        self.assertFalse(run.result['mixed_version_isolation_verified'])
+        self.assertTrue(run.result['cleanup'][-1]['removed'])
+
+    def test_overlap_reports_only_verified_control_plane_scope(self):
+        run, stored, fields, start, api, sql = self.overlap_fixture()
+        with patch.object(run, 'start_app', side_effect=start), patch.object(run, 'api', side_effect=api), \
+                patch.object(run, 'sql', side_effect=sql), patch.object(run, 'snapshot', return_value='original'), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'true', '')):
+            run.exercise_config_overlap('/api/v1/admin/priority-scheduling/config', 1, 'original', fields)
+        self.assertEqual(run.result['config_overlap']['status'], 'compatible')
+        self.assertEqual(stored['cache_weight'], 29)
+        self.assertEqual(stored['target_tps'], 53)
+        self.assertFalse(run.result['mixed_version_isolation_verified'])
+        self.assertEqual(run.result['config_overlap']['scope'], 'priority_configuration_and_account_fields')
 
     def test_api_errors_do_not_expose_response_or_credentials(self):
         run = rehearsal.Rehearsal(self.args)

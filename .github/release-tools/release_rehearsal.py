@@ -1,5 +1,6 @@
 """Exercise a drained binary upgrade and rollback using disposable local data."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -72,7 +73,10 @@ class Rehearsal:
         require(endpoint.startswith(('unix://', 'npipe://')), 'rehearsal requires a local Docker endpoint')
         for image in (self.args.runtime_image, self.args.postgres_image, self.args.redis_image):
             self.docker('image', 'inspect', image)
-        for name in (self.prefix, self.prefix + '-db', self.prefix + '-redis', self.prefix + '-app'):
+        names = [self.prefix, self.prefix + '-db', self.prefix + '-redis', self.prefix + '-app']
+        if getattr(self.args, 'overlap_config', False):
+            names.append(self.prefix + '-peer')
+        for name in names:
             kind = 'network' if name == self.prefix else 'container'
             require(self.docker(kind, 'inspect', name, check=False).returncode != 0,
                     'existing rehearsal resource requires owner recovery: ' + name)
@@ -103,9 +107,9 @@ class Rehearsal:
             except (RuntimeError, subprocess.SubprocessError):
                 self.result['cleanup'].append({'kind': kind, 'id': identity, 'removed': False})
 
-    def stop_app(self):
+    def stop_app(self, app=None):
         kind, identity = self.resources[-1]
-        require(kind == 'container' and identity == self.app, 'application cleanup order changed')
+        require(kind == 'container' and identity == (app or self.app), 'application cleanup order changed')
         self.docker('stop', '--time', '20', identity)
         self.docker('rm', '-v', identity)
         self.resources.pop()
@@ -121,11 +125,11 @@ class Rehearsal:
         return self.docker('exec', '-i', self.db, 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
                            '-U', 'postgres', '-d', 'sub2api_test', '-Atq', input=query).stdout.strip()
 
-    def api(self, method, path, body=None, token=None):
+    def api(self, method, path, body=None, token=None, *, app=None):
         headers = {'Content-Type': 'application/json'}
         if token:
             headers['Authorization'] = 'Bearer ' + token
-        result = self.docker('exec', '-i', self.app, 'python', '-c', HTTP_CLIENT,
+        result = self.docker('exec', '-i', app or self.app, 'python', '-c', HTTP_CLIENT,
                              input=json.dumps({'method': method, 'path': path, 'headers': headers, 'body': body}))
         response = json.loads(result.stdout)
         require(response['status'] == 200, f'local API {method} {path}: HTTP {response["status"]}')
@@ -133,7 +137,7 @@ class Rehearsal:
         require(data.get('code', 0) == 0, 'local API rejected ' + path)
         return data.get('data', data)
 
-    def start_app(self, binary, stage):
+    def start_app(self, binary, stage, *, name="app"):
         env = {'AUTO_SETUP': 'true', 'DATABASE_HOST': 'db', 'DATABASE_PORT': '5432',
                'DATABASE_USER': 'postgres', 'DATABASE_PASSWORD': self.password,
                'DATABASE_DBNAME': 'sub2api_test', 'DATABASE_SSLMODE': 'disable',
@@ -142,17 +146,19 @@ class Rehearsal:
                'JWT_SECRET': self.jwt, 'SERVER_HOST': '0.0.0.0', 'SERVER_PORT': '8080',
                'SERVER_MODE': 'release', 'RUN_MODE': 'standard', 'DATA_DIR': '/app/data', 'TZ': 'UTC'}
         flags = [part for key, value in env.items() for part in ('--env', key + '=' + value)]
-        self.app = self.create('container', '--name', self.prefix + '-app', '--network', self.prefix,
+        app = self.create('container', '--name', self.prefix + '-' + name, '--network', self.prefix,
                                '--tmpfs', '/app/data', '--workdir', '/app',
                                '--mount', f'type=bind,source={binary},target=/rehearsal-bin,readonly',
                                *flags, self.args.runtime_image, '/rehearsal-bin')
+        if name == "app":
+            self.app = app
         deadline = time.monotonic() + 120
         while True:
             try:
-                self.api('GET', '/health')
+                self.api('GET', '/health', app=app)
                 break
             except (RuntimeError, TimeoutError, ConnectionError):
-                state = self.docker('inspect', '--format', '{{.State.Running}}', self.app).stdout.strip()
+                state = self.docker('inspect', '--format', '{{.State.Running}}', app).stdout.strip()
                 if state != 'true' or time.monotonic() >= deadline:
                     log = self.docker('logs', '--tail', '12', self.app, check=False)
                     message = (log.stdout + log.stderr)[-3000:]
@@ -161,20 +167,20 @@ class Rehearsal:
                     self.result['startup_log'] = message
                     raise RuntimeError('local application startup failed at ' + stage)
                 time.sleep(0.5)
-        loaded = self.docker('exec', self.app, 'python', '-c',
+        loaded = self.docker('exec', app, 'python', '-c',
                              "import hashlib; print(hashlib.file_digest(open('/proc/1/exe','rb'),'sha256').hexdigest())").stdout.strip()
         expected = 'baseline_binary_sha256' if Path(binary) == self.baseline else 'candidate_binary_sha256'
         require(loaded == self.result[expected], 'running binary identity mismatch at ' + stage)
-        login = self.api('POST', '/api/v1/auth/login', {'email': 'rehearsal@example.invalid', 'password': self.password})
+        login = self.api('POST', '/api/v1/auth/login', {'email': 'rehearsal@example.invalid', 'password': self.password}, app=app)
         require(bool(login.get('access_token')), 'local login did not return an access token')
         token = login['access_token']
-        compliance = self.api('GET', '/api/v1/admin/compliance', token=token)
+        compliance = self.api('GET', '/api/v1/admin/compliance', token=token, app=app)
         if compliance['required']:
             compliance = self.api('POST', '/api/v1/admin/compliance/accept', {
                 'language': 'en', 'phrase': compliance['ack_phrase_en']}, token)
         require(compliance['required'] is False, 'local fixture onboarding did not complete')
         self.result['stages'].append({'stage': stage, 'health': True, 'login': True,
-                                     'fixture_onboarding': True, 'container_id': self.app, 'loaded_sha256': loaded})
+                                     'fixture_onboarding': True, 'container_id': app, 'loaded_sha256': loaded})
         return login['access_token']
 
     def migrations(self):
@@ -187,13 +193,74 @@ class Rehearsal:
           'monitor',(SELECT jsonb_build_object('config',config,'paused',paused,'revision',revision,
               'pause_generation',pause_generation) FROM account_performance_monitors WHERE account_id={account}))""")
 
+    def exercise_config_overlap(self, config_path, account, original, legacy_fields, token=None):
+        overlap = {'scope': 'priority_configuration_and_account_fields', 'status': 'running',
+                   'candidate_node': self.app, 'database_container': self.db, 'redis_container': self.redis}
+        self.result['config_overlap'] = overlap
+        current = self.api('GET', config_path, token=token)
+        require('cache_weight' in current, 'candidate does not support the cache-weight compatibility check')
+        overlap.update(checked_fields=sorted(current),
+                       candidate_only_fields=sorted(set(current) - set(legacy_fields)))
+        current.update(cache_weight=17, target_tps=47, preserve_session_affinity=True, enabled=False)
+        self.api('PUT', config_path, current, token)
+        peer = None
+
+        def verify(expected, stage, load_choices=None):
+            stored = json.loads(self.sql("SELECT value FROM settings WHERE key='priority_scheduling_v1'"))
+            changed = [key for key, value in expected.items() if stored.get(key) != value and
+                       not (key == 'max_load_percent' and load_choices and stored.get(key) in load_choices)]
+            if changed:
+                overlap.update(status='incompatible', failed_stage=stage, changed_fields=sorted(changed))
+                raise RuntimeError('mixed configuration incompatible at ' + stage + ': ' + ','.join(sorted(changed)))
+            require(self.snapshot(account) == original, 'overlap changed retained account fields at ' + stage)
+
+        try:
+            peer_token = self.start_app(self.baseline, 'baseline_overlap', name='peer')
+            peer = self.result['stages'][-1]['container_id']
+            require(peer != self.app, 'overlap needs independent application instances')
+            overlap['baseline_node'] = peer
+            for identity in (peer, self.app):
+                require(self.docker('inspect', '--format', '{{.State.Running}}', identity).stdout.strip() == 'true',
+                        'both overlap instances must be running')
+            legacy = {key: value for key, value in current.items() if key in legacy_fields}
+            legacy.pop('cache_weight', None)
+            legacy.pop('target_tps', None)
+            legacy['max_load_percent'] = 75
+            expected = dict(current, max_load_percent=75)
+            self.api('PUT', config_path, legacy, peer_token, app=peer)
+            verify(expected, 'baseline_save')
+            self.api('PUT', config_path, legacy, token)
+            verify(expected, 'candidate_legacy_save')
+            latest = dict(expected, cache_weight=29, target_tps=53, max_load_percent=77)
+            legacy['max_load_percent'] = 73
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                old_write = pool.submit(self.api, 'PUT', config_path, legacy, peer_token, app=peer)
+                new_write = pool.submit(self.api, 'PUT', config_path, latest, token)
+                old_write.result()
+                new_write.result()
+            verify(latest, 'concurrent_saves', (73, 77))
+            self.api('PUT', f'/api/v1/admin/accounts/{account}', {'name': 'upgrade-overlap-account'}, peer_token, app=peer)
+            require(self.snapshot(account) == original, 'baseline account edit changed retained fields')
+            self.api('GET', '/health', app=peer)
+            self.api('GET', '/health')
+            overlap.update(status='compatible', concurrent_writes=2, checked_fields=sorted(current),
+                           candidate_only_fields=sorted(set(current) - set(legacy_fields)), account_fields_preserved=True)
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+            if overlap['status'] != 'incompatible':
+                overlap['status'] = 'failed'
+            raise
+        finally:
+            if peer is not None:
+                self.stop_app(peer)
+
     def exercise(self):
         self.create('network', '--internal', self.prefix)
         self.db = self.create('container', '--name', self.prefix + '-db', '--network', self.prefix,
-                               '--network-alias', 'db', '--tmpfs', '/var/lib/postgresql/data',
+                               '--network-alias', 'db', '--tmpfs', '/var/lib/postgresql:rw,size=1073741824',
+                               '--env', 'PGDATA=/var/lib/postgresql/rehearsal',
                                '--env', 'POSTGRES_PASSWORD=' + self.password,
                                '--env', 'POSTGRES_DB=sub2api_test', self.args.postgres_image)
-        self.create('container', '--name', self.prefix + '-redis', '--network', self.prefix,
+        self.redis = self.create('container', '--name', self.prefix + '-redis', '--network', self.prefix,
                     '--network-alias', 'redis', '--tmpfs', '/data', self.args.redis_image,
                     'redis-server', '--save', '', '--appendonly', 'no')
         deadline = time.monotonic() + 60
@@ -203,6 +270,7 @@ class Rehearsal:
         token = self.start_app(self.baseline, 'baseline')
         config_path = '/api/v1/admin/priority-scheduling/config'
         legacy = self.api('GET', config_path, token=token)
+        baseline_fields = set(legacy)
         legacy.update(enabled=False, preserve_session_affinity=True)
         self.api('PUT', config_path, legacy, token)
         account = self.api('POST', '/api/v1/admin/accounts', {
@@ -226,6 +294,9 @@ class Rehearsal:
         legacy.pop('target_tps', None)
         self.api('PUT', config_path, legacy, token)
         current = self.api('GET', config_path, token=token)
+        if getattr(self.args, 'overlap_config', False):
+            self.exercise_config_overlap(config_path, account, original, baseline_fields, token)
+            self.api('PUT', config_path, current, token)
         require(current['target_tps'] == 47, 'legacy-shaped save erased the new TPS target')
         require(current['preserve_session_affinity'] and not current['enabled'], 'legacy-shaped save changed policy')
         self.result.update(after_migrations=len(after), old_checksums_preserved=True,

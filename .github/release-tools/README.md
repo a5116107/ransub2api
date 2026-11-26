@@ -76,3 +76,63 @@ The candidate must be Linux amd64 with its full source SHA in `-version`. The ba
 An internal Docker network and tmpfs-backed data isolate the fixture; no port is published. Synthetic admin/account data completes normal fixture onboarding, without changing the production guard or user acknowledgements. Stages are baseline → stopped baseline → candidate → stopped candidate → old binary rollback → stopped rollback → candidate again. Each stage verifies the actual running binary hash, health and authenticated API access. Checks cover unchanged old migration checksums, account credentials/pricing and paused performance-monitor state, a legacy-shaped save retaining the candidate's TPS target, an ordinary account edit after rollback, and idempotent re-upgrade.
 
 This proves a serial, drained rollout on newly initialized disposable data. It does not prove a restored production-data upgrade, concurrent mixed-version isolation, upstream model quality or cache lifetime. Retain those acceptance items separately. Resource IDs and outcomes are written to the requested result; cleanup verifies ownership before removing only its containers/network and extracted baseline. Unknown ownership, Docker errors and failed cleanup remain failures with retained evidence. The caller owns the candidate binary and removes it after verification; release archives are retained.
+
+### Optional mixed-version control-plane check
+
+Add `--overlap-config` to the same `local-rehearse` command to start an independently
+identified baseline peer while the candidate is running. Both use the fixture's
+PostgreSQL and Redis, with no published ports or access to real upstreams. The
+normal drained upgrade/rollback stages remain unchanged. This option tests an
+overlapping **management** phase; it does not authorize a rolling production rollout.
+
+The check reads the persisted scheduling JSON, rather than trusting API defaults.
+It verifies an old-node save, an old-client-shaped candidate save, two concurrent
+saves, and an old-node account edit. Cache weight, TPS, session protection,
+credentials, account pricing and paused monitoring fields must survive. A mismatch
+returns a nonzero exit with `config_overlap.status=incompatible`, `failed_stage`
+and the affected field names. No credentials or account contents are written to
+the result. Existing peer names are protected before creation; cleanup uses
+captured resource IDs. PostgreSQL uses an explicit `PGDATA` under fixture tmpfs,
+including with images whose default data layout changed in PostgreSQL 18.
+
+`config_overlap.status=compatible` covers only the tested source pair and
+`priority_configuration_and_account_fields`. The broader
+`mixed_version_isolation_verified` remains false: request ownership, shared
+capacity, background tasks, non-text capabilities and cache lifetime need their
+own evidence. In particular, a `2.21.0-ransub.9` writer drops the newer
+`cache_weight` field; drain and retire that writer before managing newer policy.
+An old-client save through a new server is not proof that an old binary is safe.
+
+### Explicit two-turn tool verification
+
+`local-tool-smoke` verifies the first approved non-text scenario: Responses
+function calling. It reads `{"api_key":"TOKEN"}` from protected stdin, not a
+command-line argument. With the repository's existing Python environment:
+
+```powershell
+python -B .github/release-tools/release_matrix.py local-tool-smoke `
+  --base-url https://HOST/v1 --model MODEL --output RESULT_PATH
+```
+
+An optional `--proxy http://HOST:PORT` selects an explicit HTTP CONNECT proxy.
+Without it, system proxy discovery is disabled. The probe identifies itself as
+`RanSub2API-Tool-Verification/1.0`. It makes at most two application requests,
+with no automatic retries; each may incur normal usage charges. The fixed local
+tool only adds 7 and 11. No shell, remote execution, files or external side effects
+are exposed to the model.
+
+Turn one must produce one complete `add_numbers` call and matching streamed
+arguments. Turn two returns the result using the same model/session, retains the
+required history only in memory, and must end with one complete response containing
+`18`. A text-only answer, missing arguments, failed/incomplete or duplicate terminal,
+extra tool call or incorrect final answer fails verification. Results contain
+request IDs, event types and only upstream-reported usage counters, never the API
+key, encrypted history or full transcripts. HTTP failures retain the status and
+server identity without storing private response bodies. Correlate each returned
+request ID with exactly one usage record and the original upstream account before
+claiming affinity and accounting acceptance. Inspect a failed result before any
+new paid invocation.
+
+This is an explicit business-path check, not an automatic monitor or a quality,
+pricing, intelligence, cache-hit or reliability guarantee. It does not promote
+text-probe evidence into tool eligibility or alter monitoring/scheduling policy.
