@@ -2771,3 +2771,7 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 真实视频缺口：OpenAIVideoEndpointCreate遗漏于IsAsyncVideoCreate，导致已接受任务未保存归属/计费快照且deferred WriteResponse不执行，最终空200；原202断言在旧实现实证失败。原位补异步分类并明确openai提供方（不借grok身份），保留完整生命周期、同上游task ID的账号/Key隔离、延迟唯一计费等断言。该修复不宣称OpenAI已支持区域资金或共享Key持久任务的全部契约；未支持提供方仍沿既有权威拒绝，不自动启用生产视频或检测。
 - 媒体统一入口的区域查询转发位于审核代码之前，触发原静态顺序检查。把该query-only委托移到生成请求的审核/准入之后、其他路由/选账号/计费之前；查询本身仍不执行生成审核、不分配生成槽位。原审核顺序测试不删不放宽，既有区域查询及资金拒绝/恢复继续验证。
 - 修复后媒体/Goal/审核/异步/Seedance/MiniMax两包专项875项全部通过/0失败/0跳过，保留原6失败和43skip，不将它们改报全仓绿；仅对受影响原调用链扩大验证，未改迁移和前端。准备未公开.4自研.2候选，.1只是已验迁移的内部候选，不改写已有公开发行或伪造source。
+
+- 最终视频/上下文补丁1c9955ba0389f699e190161e23e55fbe788b23b9已本地提交/同步；专项875通过后再做媒体/审核/上下文/恢复精确handler225全通过，race两包重复2轮各1.484s/1.405s、vet与增量lint0 issues。完整service原绿复用，handler原全量失败/43skip保留，与精确修复覆盖分开不合计。
+- 最终.4自研.2 local-build和verify退出0，归档54245560B/SHA e21e99504b1b27b7afd2c14bc050bf95fd67102d09b2bc0cda5877ae8085c197，程序170918048B/SHA090bb3bebbef7f6e2b035ec4dd79bea4ba576a7b6926832e0efb6ca49460c071，临时前端自动回收。前候选.1完整迁移和前端原验证不重造；最终包以同一既有ops入口追加完整副本复核，沿原handle33017，不据前候选冒称最终加载。
+- PR8在用户已授权审核合并范围内，固定已验head1c9955ba0、无冲突后正常merge为85bc50cd6f59cf756727ef954e214b8a9dd8384c；本地production及远端production/integration正常快进相同，没有force。合并tip与实际制品源码backend/frontend/deploy/.github零差异；活动PR空，official upstream禁推、供应池开发分支不动。合并时Release仍临时停用，尚未发行/生产切换，下一最终副本通过后使用同源资产发行并恢复自动化。
