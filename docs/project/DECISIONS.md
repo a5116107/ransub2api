@@ -2607,3 +2607,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 将重启修复合并入同一未公开2.25.2-ransub.2。先前f7667d551源本机构建仍在Go阶段、无归档输出；核对PID/父子/完整目标与无编译子进程后仅停止该作废构建，保留失败日志，原输出input为空可复用。未公开/重写任何已发行制品，不为两项修复分别重启生产。
 
 - 兼容v2.15.0沿原规则完整sysutil lint最终退出0、0 issues.，原v2.9导入失败日志不覆盖；不修改go.mod或lint规则。两项源码验证完成，进入同一.2最终构建与生产验收。
+
+
+### 2026-11-26 D7.1/D8.1：同源 .2 发行、后台优雅重启与公网收尾
+
+- 最终源码 aeabbcbc46f7c89f2f73507f047d16670e766222 已同步自有production，v2.25.2-ransub.2精确同源；未提升在研供应池。local-build --simple退出0，类型/Vite构建通过；已缓存v2.15.0沿原规则完整sysutil lint0，Windows/Linux vet0。归档250144033bytes/SHA256 ea9748071a15d8b1fa09b9a89d84fc6d1182cb28166ad3c68a45c6c4b96d1ac0，程序SHA256 279415426b848c81218b16c70c76806d734c2f0af12a7fa09d8cd7bb3f920a84。本次Go子进程p=2/GOMAXPROCS=2，沿用共享缓存，最终Go WORK已自动删除，不建立第二套缓存。
+- 生产备份309807380bytes/SHA256 2389269002c53d8d185b66536dc4bc9266bdb5696de20145bceaef368282395c，在/opt/sub2api/deploy/backups/ransub2api-2.25.2-ransub.2，旧.1镜像/程序/配置/数据保留。副本旧.1→候选.2→旧版回退→候选重升四阶段退出0、迁移保持497；账号/分组/凭据/倍率/并发/余额及11表逐行指纹一致，user_traffic_events146166、hourly378、forecast coverage1保持。演练资源按捕获ID/归属退出回收，无生产写入。
+- local-publish核对4项GitHub资产digest后公开stable/latest，未覆盖旧Release。Release已恢复active，run45747279393仅publish-prebuilt-image成功，其余7job skipped，无云端编译/测试CI。固定镜像 ghcr.io/a5116107/ransub2api:2.25.2-ransub.2@sha256:193fd45f81e9832197d0637960bf9368effc7081c3ce92f0004f75d94dcefb45，服务器pull、revision和镜像程序哈希与归档一致。远端/opt/sub2api没有Git源码检出，以固定自有镜像和managed程序部署，不为“同步”新增源码副本；本地/仓库/服务按发行源身份对应。
+- 11:20香港时间正式维护排空，旧.1干净退出、保护业务字段无变化。新.2升级、真实POST /api/v1/admin/system/restart、同镜像重建三阶段均通过加载hash/Commit/管理API/迁移与业务字段保护。后台重启实测StartedAt变化，日志含Shutting down server及Server exited，无forced shutdown/排空超限；其后健康恢复，证明修复进入原生命周期，不只是单测。PG f30095818cb1、Redis 5b796d6478e0，16账号/2组/1用户/1Key保持，priority原关闭及60/120/300秒、5/3/1和人工状态保持。维护路由已撤，verify passed=true/current=latest=2.25.2-ransub.2/has_update=false/warning=null。
+- 公网最终public-smoke.py退出0：真实管理员登录/版本徽标、流量历史/健康及凭证守护入口、原停用工单明确403理由、质量列表/详情1440与390布局通过，无pageerror/HTTP错误/非登录写入。轮次inconclusive与单样本request error继续分层。本窗口无comparison_pending生产记录，未为截图造记录或强制计费检测；等待状态的实际交互由同构建中英双宽28项夹具证明，加载身份另核，不伪称观察到线上等待批次。
+- 公网真实Responses SSE200/唯一response.completed且有文本delta，无error/failed/incomplete，总1.734秒（含本机网络，不是纯上游TTFT）；client_request_id 8ea2b841-96a8-49d5-8eaf-b9f67bd8f2ed唯一关联usage135529/账号14，输入53/输出5，之后仅只读查账不重发。孤立工具仍400，Goal上下文保持。第一次扩展本地冒烟把Python Locator.first写成JS first()，在发送计费请求前失败；原日志保留，修正脚本属性后最终通过，不改生产组件绕过测试。
+- 新实例启动以来22条最小落库时序后验：21条200/success/completed且无断连/写错；usage135517为200/client_disconnected/completed，downstream_error/client_disconnect=true。原样保留pending-comparison-post-observe.json，不将all_observed_success=false改报全绿，不据单一标记推断断连来源或所有会话SLA；本轮测试请求135529明确完整成功。
+- cleanup --dry-run先核两个文件SHA及0容器挂载/进程exe/fd引用；正式cleanup退出0，删除candidate-aeabbcbc46f7.sub2api 1064300704bytes、cutover-fields-6dada4518ae3.json 85983bytes，共1064386687逻辑bytes，旧程序/数据库回滚hash复核通过、health=ok。本地已退出Linux测试程序7600766bytes精确删除，最终WORK自动清理；正式归档/镜像/备份和最小证据保留，不冒称实际磁盘分配量。历史宿主拒删scratch保持原路径，未换工具或移动重试。
+- D7.1/D8.1完整子任务验收，原STATE/设计原位更新并移除过时生产版本/候选等待；原28项20done/8部分保持，新增子项不冒算原父任务完成。D2/D4外部unknown关联/模型fast倍率来源、D3首批非文本范围、D5/D6可信缓存域与净收益、D7完整解释、D8完整混版和D9旧Mac/BPS已输出长流等仍按原验收及责任方保留。
