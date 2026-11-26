@@ -2654,3 +2654,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 自动化提交`aee3793423fccb7a14157fb0599cc671dccb455c`把VERSION改为2.19.1。为保留全部远端历史，先合并该机械提交，再提交`f92b36da6337110b53065963f7ef921d09701bbb`恢复VERSION为2.25.2-ransub.3；origin/production与本地一致，应用发行tag仍固定指向构建源c0a968c5。该文档后续提交只记录证据，不改发行程序。
 - `.3`已发行但生产仍.2。服务器未部署；不在SSH管理通道不可用且数据库健康未知时切换。生产SHA、日志/DB与管理工作流仍待SSH banner恢复或控制台提供脱敏证据；若日志确认依赖不可用，先修复并验证依赖再部署。
 - 生产错误复核的解除条件：SSH返回协议banner并可运行只读取证命令，或服务器控制台提供截图时间段的脱敏应用错误与PostgreSQL状态。届时按第一个共同失败依赖修根因；保留原镜像/程序/数据库备份及回滚材料。
+
+
+### 2026-11-26：稳定线 PR、版本引用与生产 SSH 状态复核
+
+- GitHub PR 列表没有 open PR。#6（v2.25.2 自研整合）于2026-11-25合并，merge commit `a9a5fe1202dc166d0dc16538e0def5868c27e195` 是当前 production HEAD 的祖先；#5/#4已合并，#3为旧v2.25.0 PR且已关闭、仍显示conflicting，已由#4/#6的后续整合取代，不存在待处理的活动PR冲突。
+- 本地唯一工作树 `production` 与自有 `origin/production` 同为 `e76658b5185fe1fde93d689980ac1cc729c8b00d`；`v2.25.2-ransub.3` tag仍指向预构建源`c0a968c5`且是Latest，远端`v2.19.1` ref API返回404。PR列表、祖先关系和远端引用均为只读核验；文档提交使用`[skip ci]`，无新workflow run。
+- SSH技能登记使用主机别名`hk2`，OpenSSH alias为`srv-hk2`。本轮先用错误键`srv-hk2`作为登记别名导致本地`found 0`，随后正确以`hk2`核验：direct报`Timeout opening channel`，SOCKS5报`Error reading SSH protocol banner`。这是新的连接失败证据，仍未取得生产日志、数据库状态或进程SHA；没有重启、部署、迁移或改动生产数据。
+- 生产仍停留在已验证的`2.25.2-ransub.2`。D3.2生产验收等待可用远程命令通道或服务器控制台提供截图时段的脱敏应用日志和PostgreSQL状态；后续必须先核实共同根因、回滚材料和加载身份，再决定切换`.3`。不将公网`/health 200`视为业务恢复，不将PR无冲突/合并视为生产验收。

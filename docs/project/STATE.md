@@ -3,13 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-D3.2代码c0a968c5；专项/全service、UI55、类型/lint、浏览器及Linux构建通过；.3已发行。
-授权：继续稳定线提交/同步/发行/部署；不CI、不新工作树。origin/production=f92b36da；.3 tag源=c0a968c5且为GitHub Latest。远端误推v2.19.1 tag已按授权删除；GitHub将对应旧Release转为Draft并保留资产。
-生产仍.2；截图见auth/performance 503、timer/schedulable 500。15:04–15:07 HKT health 200、未登录401。
-health仅测进程。SSH直连/代理未获banner，TCP可达；生产日志、DB和加载SHA未取到，根因未定。
-下一步：SSH恢复后取日志/DB/加载SHA，再决定.3切换。D3.2生产验收开放。
-复用D3.1公网两轮、D8.2混版证据；工具题型需显式选择，不改准入/调度，不调用未计量插件。
-原28项20done/8部分保持；D3父验收及外部契约/缓存/旧长流不关闭。
+D3.2代码c0a968c5；service/UI55/类型lint/浏览器/Linux构建通过；.3已发行。
+授权：稳定线提交/同步/发行/部署；不CI、不新工作树。origin/production=e76658b5；.3 Latest（源c0a968c5）；v2.19.1远端tag已删、Release成Draft。
+生产仍.2；截图见auth/performance 503、timer/schedulable 500；15:04–15:07 HKT health 200/未登录401。
+health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在banner阶段EOF；生产日志、DB、加载SHA未取到，根因未定。
+解除条件：SSH可执行只读命令或控制台提供截图时段脱敏日志/DB状态；先取证再决定.3切换。D3.2生产验收开放。
+复用D3.1两轮公网、D8.2混版证据；工具题型显式选，不改准入/调度，不调用未计量插件。
+原28项20done/8部分；D3父验收及外部契约/缓存/旧长流不关闭。
 <!-- resume:end -->
 
 ## 目标与入口
