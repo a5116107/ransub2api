@@ -3,11 +3,13 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-D3.2代码c0a968c5；service/UI55/类型lint/浏览器/Linux构建通过；.3已发行。
-授权：稳定线提交/同步/发行/部署；不CI、不新工作树。本地production与origin同步；.3 Latest（源c0a968c5）；v2.19.1远端tag已删、Release成Draft。
-生产仍.2；截图见auth/performance 503、timer/schedulable 500；15:04–15:07 HKT health 200/未登录401。
-health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在banner阶段EOF；生产日志、DB、加载SHA未取到，根因未定。
-解除条件：SSH可执行只读命令或控制台提供截图时段脱敏日志/DB状态；先取证再决定.3切换。D3.2生产验收开放。
+授权：稳定线提交/同步/发行/部署；不CI、不新工作树。production；.3源c0a968c5已发行上线。
+SSH已恢复；16:24:30上游9的500已切14/200，未发现同窗应用502，不推断全部会话恢复。
+.3副本四阶段/497迁移/16账号及历史表摘要、生产升级/优雅重启/同镜像重建通过；镜像cfe51f48de4b/程序676d64bf2c54。
+根盘100%已按用户确认删除11个旧自有镜像，保留.2/.3与全部数据库备份；可用8.77GB，容器不变。
+发现更新器500MiB解压上限与.3程序1072685216字节冲突；dist含909605706字节旧资源。先修发布体积契约，不提高解压上限。
+公网auth/performance/16账号timer、1440/390后台及SSE唯一记账通过。发布工具89项Linux测试/ruff0及Go overlay实测通过。
+当前：提交发布链修复后本机构建.4小包，再以原在线更新器验证；不覆盖.3资产、不改500MiB限制。旧dist删除被策略拒绝，保留不再试删。
 复用D3.1两轮公网、D8.2混版证据；工具题型显式选，不改准入/调度，不调用未计量插件。
 原28项20done/8部分；D3父验收及外部契约/缓存/旧长流不关闭。
 <!-- resume:end -->
@@ -67,7 +69,7 @@ health仅证路由。登记名hk2直连SSH报Timeout opening channel；SOCKS5在
 
 ## 下一项工作
 
-SSH恢复后取生产日志/DB/加载SHA，按共同根因修复并灰度验收`.3`；D2/D4、缓存契约仍待外部证据。
+完成`.3`切换/公网管理验收，修复旧资源累积与发布体积缺口；D2/D4、缓存契约仍待外部证据。
 
 ## 外部等待与清理
 
@@ -81,4 +83,4 @@ SSH恢复后取生产日志/DB/加载SHA，按共同根因修复并灰度验收`
 - 历史拒删的候选/overlay/pyc/脚本路径与证据见DECISIONS；保留由拥有者处理，未重试或移动。
 - 历史拒删scratch（含stream-health/production-failover/release-build/stable-sync）见DECISIONS，拥有者处理，未重试。
 - 固定基线不限量lint0/vet0；完整历史失败保留，不称整仓全绿。
-- 生产SSH：`hk2` direct channel timeout、SOCKS5 banner EOF；需SSH只读命令可执行，或控制台提供截图时段脱敏日志/DB状态。
+- 凭据导入等待轮换后本机`.codex/secrets/hudy-chatgpt.json`；2026-11-26只查元数据时不存在，未读聊天token。有效性通过后入group2。

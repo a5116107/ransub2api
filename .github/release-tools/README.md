@@ -57,6 +57,10 @@ python .github/release-tools/release_matrix.py local-publish --input H:/Root/Dev
 
 `--simple` builds a real Linux amd64 archive including the embedded frontend; it is not the old image-only simple release. Other targets remain unavailable until built and verified. Publication first creates a draft and compares GitHub-calculated asset digests before making it latest. Failures leave the draft unpublished. No GitHub credential is included in the package or required by public update downloads.
 
+Local builds select the tracked `vite.config.ts` explicitly and write frontend assets into one fresh, task-owned directory under the release output. The existing Go build uses an `-overlay` mapping to embed only those assets while hiding historical development `backend/internal/web/dist` files; it does not delete or modify that development directory. The fresh assets and overlay are reclaimed after the build, including compiler failures. Do not work around a protected output directory by embedding its accumulated resources.
+
+`verify`, image contexts and publication enforce the online updater's unchanged 500 MiB archive and extracted-binary limits. An oversized, empty, missing, duplicate or linked executable is rejected even when its checksum and source manifest match. Keep the runtime decompression bound; investigate stale embedded inputs instead of raising it to publish an inflated build.
+
 To recover a missing GHCR runtime image for a locally published release, manually dispatch the existing Release workflow with `tag=vX.Y.Z-ransub.N` and `prebuilt_only=true`. This path verifies the downloaded archive against its source commit and packages it without compiling or running test CI. Confirm public image pull access before pinning production to its digest. Container update binaries must persist across recreation; keep the previous image and database/data backups until deployment acceptance is complete.
 
 ## Local drained upgrade and rollback rehearsal

@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 import yaml
@@ -98,6 +100,10 @@ class ReleaseMatrixTest(unittest.TestCase):
 
     def test_local_build_uses_selected_version_and_bypasses_package_test_hooks(self):
         def build(command, **kwargs):
+            if command[:4] == ['pnpm', 'exec', 'vite', 'build']:
+                frontend = Path(command[command.index('--outDir') + 1])
+                frontend.mkdir()
+                (frontend / 'index.html').write_text('current frontend')
             if command[:2] == ['go', 'build']:
                 Path(command[command.index('-o') + 1]).write_bytes(b'fixture binary')
             return subprocess.CompletedProcess(command, 0)
@@ -107,9 +113,118 @@ class ReleaseMatrixTest(unittest.TestCase):
                 patch.object(subprocess, 'run', side_effect=build) as command:
             release.local_build(argparse.Namespace(output='build', simple=True, version='9.8.7-ransub.3'))
         commands = [call.args[0] for call in command.call_args_list]
-        self.assertEqual(commands[:2], [['pnpm', 'exec', 'vue-tsc', '-b'], ['pnpm', 'exec', 'vite', 'build']])
+        self.assertEqual(commands[0], ['pnpm', 'exec', 'vue-tsc', '-b'])
+        self.assertEqual(commands[1][:6], ['pnpm', 'exec', 'vite', 'build', '--config', 'vite.config.ts'])
+        self.assertIn('--emptyOutDir', commands[1])
         self.assertIn('main.Version=9.8.7-ransub.3', commands[2][commands[2].index('-ldflags') + 1])
         release.verify(argparse.Namespace(input='build/input', version='9.8.7-ransub.3', sha='a' * 40, simple=True))
+
+    def test_local_build_embeds_only_fresh_frontend_without_deleting_old_outputs(self):
+        dist = Path('backend/internal/web/dist').resolve()
+        dist.mkdir(parents=True)
+        obsolete = dist / 'obsolete.js'
+        obsolete.write_text('protected historical output')
+        observed = {}
+
+        def build(command, **kwargs):
+            if command[:4] == ['pnpm', 'exec', 'vite', 'build']:
+                fresh = Path(command[command.index('--outDir') + 1])
+                fresh.mkdir()
+                (fresh / 'index.html').write_text('new entry')
+                (fresh / 'current.js').write_text('new code')
+                observed['fresh'] = fresh
+            if command[:2] == ['go', 'build']:
+                overlay = Path(command[command.index('-overlay') + 1])
+                replacement = json.loads(overlay.read_text())['Replace']
+                self.assertEqual(replacement[str(obsolete)], '')
+                self.assertEqual(Path(replacement[str(dist / 'current.js')]).read_text(), 'new code')
+                self.assertEqual(Path(replacement[str(dist / 'index.html')]).read_text(), 'new entry')
+                observed['overlay'] = overlay
+                Path(command[command.index('-o') + 1]).write_bytes(b'fixture binary')
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(subprocess, 'check_output', side_effect=['', 'a' * 40, '']), \
+                patch.object(shutil, 'which', return_value='pnpm'), \
+                patch.object(subprocess, 'run', side_effect=build):
+            release.local_build(argparse.Namespace(output='build', simple=True, version='9.8.7-ransub.3'))
+        self.assertEqual(obsolete.read_text(), 'protected historical output')
+        self.assertFalse(observed['fresh'].exists())
+        self.assertFalse(observed['overlay'].exists())
+
+    def test_verify_enforces_online_updater_binary_limit_for_every_target(self):
+        args = self.fixture_artifacts()
+        with patch.object(release, 'MAX_UPDATE_BINARY_BYTES', 7, create=True):
+            release.verify(args)
+        for target in release.targets(False):
+            selected_dir = Path(f"verify-{target['goos']}-{target['goarch']}")
+            selected_dir.mkdir()
+            for name in (release.archive_name(args.version, target), f"manifest-{target['goos']}-{target['goarch']}.json"):
+                shutil.copy2(Path(args.input) / name, selected_dir / name)
+            with self.subTest(target=target), \
+                    patch.object(release, 'targets', return_value=[target]), \
+                    patch.object(release, 'MAX_UPDATE_BINARY_BYTES', 6, create=True):
+                with self.assertRaisesRegex(ValueError, 'online updater binary limit'):
+                    release.verify(argparse.Namespace(**{**vars(args), 'input': str(selected_dir)}))
+
+    def test_verify_rejects_archive_larger_than_online_download_limit(self):
+        args = self.fixture_artifacts(True)
+        with patch.object(release, 'MAX_UPDATE_DOWNLOAD_BYTES', 1, create=True):
+            with self.assertRaisesRegex(ValueError, 'online updater download limit'):
+                release.verify(args)
+
+    def test_verify_rejects_empty_duplicate_linked_or_missing_executable(self):
+        args = self.fixture_artifacts()
+        for target in release.targets(False):
+            for kind in ('empty', 'duplicate', 'linked', 'missing'):
+                with self.subTest(target=target, kind=kind):
+                    directory = Path(f"invalid-{target['goos']}-{target['goarch']}-{kind}")
+                    directory.mkdir()
+                    name = release.archive_name(args.version, target)
+                    archive_path = directory / name
+                    if target['goos'] == 'windows':
+                        with zipfile.ZipFile(archive_path, 'w') as archive:
+                            entry = zipfile.ZipInfo('sub2api.exe' if kind != 'missing' else 'other')
+                            entry.create_system = 3
+                            entry.external_attr = (stat.S_IFLNK | 0o777) << 16 if kind == 'linked' else (stat.S_IFREG | 0o755) << 16
+                            archive.writestr(entry, b'' if kind == 'empty' else b'fixture')
+                            if kind == 'duplicate':
+                                archive.writestr('./sub2api.exe', b'fixture')
+                    else:
+                        with tarfile.open(archive_path, 'w:gz') as archive:
+                            entry = tarfile.TarInfo('sub2api' if kind != 'missing' else 'other')
+                            entry.size = 0 if kind == 'empty' else 7
+                            if kind == 'linked':
+                                entry.type, entry.linkname, entry.size = tarfile.SYMTYPE, 'other', 0
+                            archive.addfile(entry, io.BytesIO(b'fixture'))
+                            if kind == 'duplicate':
+                                duplicate = tarfile.TarInfo('./sub2api')
+                                duplicate.size = 7
+                                archive.addfile(duplicate, io.BytesIO(b'fixture'))
+                    manifest = {'sha': args.sha, 'version': args.version, 'target': target, 'archive': name, 'sha256': release.sha256(archive_path)}
+                    (directory / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(manifest))
+                    with patch.object(release, 'targets', return_value=[target]), self.assertRaises(ValueError):
+                        release.verify(argparse.Namespace(**{**vars(args), 'input': str(directory)}))
+
+    def test_local_build_releases_fresh_frontend_after_compiler_failure(self):
+        observed = {}
+
+        def build(command, **kwargs):
+            if command[:4] == ['pnpm', 'exec', 'vite', 'build']:
+                fresh = Path(command[command.index('--outDir') + 1])
+                fresh.mkdir()
+                (fresh / 'index.html').write_text('new entry')
+                observed['fresh'] = fresh
+            if command[:2] == ['go', 'build']:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(subprocess, 'check_output', side_effect=['', 'a' * 40, '']), \
+                patch.object(shutil, 'which', return_value='pnpm'), \
+                patch.object(subprocess, 'run', side_effect=build):
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.local_build(argparse.Namespace(output='build', simple=True, version='9.8.7-ransub.3'))
+        self.assertFalse(observed['fresh'].exists())
+        self.assertEqual(list(Path('build/input').iterdir()), [])
 
     def test_local_publication_rejects_wrong_repository_before_upload(self):
         Path('release').mkdir()
@@ -136,14 +251,15 @@ class ReleaseMatrixTest(unittest.TestCase):
         for target in release.targets(simple):
             name = release.archive_name(version, target)
             archive = directory / name
-            if target['goos'] == 'linux':
+            if target['goos'] != 'windows':
                 with tarfile.open(archive, 'w:gz') as out:
                     info = tarfile.TarInfo('sub2api')
                     info.size = 7
                     info.mode = 0o755
                     out.addfile(info, io.BytesIO(b'fixture'))
             else:
-                archive.write_bytes(b'fixture archive')
+                with zipfile.ZipFile(archive, 'w') as out:
+                    out.writestr('sub2api.exe', b'fixture')
             metadata = {'version': version, 'sha': 'a' * 40, 'target': target,
                         'archive': name, 'sha256': release.sha256(archive)}
             (directory / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(metadata))

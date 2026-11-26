@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 
@@ -23,6 +25,9 @@ VERSION_FILE = Path('backend/cmd/server/VERSION')
 VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
 CUSTOM_STABLE_RE = re.compile(r'\d+\.\d+\.\d+-ransub\.[1-9]\d*')
 CUSTOM_REPOSITORY = 'a5116107/ransub2api'
+# Match the existing updater; a valid checksum alone does not make an installable archive.
+MAX_UPDATE_DOWNLOAD_BYTES = 500 * 1024 * 1024
+MAX_UPDATE_BINARY_BYTES = 500 * 1024 * 1024
 
 
 def custom_version(tag):
@@ -216,6 +221,23 @@ def verify(args):
         if manifest != {'sha': args.sha, 'version': args.version, 'target': target,
                         'archive': name, 'sha256': sha256(directory / name)}:
             raise ValueError(f'build provenance or checksum mismatch: {name}')
+        archive_path = directory / name
+        if archive_path.stat().st_size > MAX_UPDATE_DOWNLOAD_BYTES:
+            raise ValueError(f'archive exceeds online updater download limit: {name}')
+        if target['goos'] == 'windows':
+            with zipfile.ZipFile(archive_path) as archive:
+                members = [item for item in archive.infolist() if item.filename in ('sub2api.exe', './sub2api.exe')]
+                if len(members) != 1 or members[0].is_dir() or stat.S_ISLNK(members[0].external_attr >> 16):
+                    raise ValueError(f'archive must contain one regular sub2api binary: {name}')
+                size = members[0].file_size
+        else:
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                members = [item for item in archive.getmembers() if item.name in ('sub2api', './sub2api')]
+                if len(members) != 1 or not members[0].isfile():
+                    raise ValueError(f'archive must contain one regular sub2api binary: {name}')
+                size = members[0].size
+        if not 0 < size <= MAX_UPDATE_BINARY_BYTES:
+            raise ValueError(f'binary is empty or exceeds online updater binary limit: {name}')
     if {p.name for p in directory.iterdir()} != expected:
         raise ValueError('missing or unexpected release artifacts')
 
@@ -261,32 +283,49 @@ def local_build(args):
         raise ValueError('pnpm is required to build the matching embedded frontend')
     # The package build alias may include test hooks; release runners only build.
     subprocess.run([pnpm, 'exec', 'vue-tsc', '-b'], cwd='frontend', check=True)
-    subprocess.run([pnpm, 'exec', 'vite', 'build'], cwd='frontend', check=True)
     date = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     files = subprocess.check_output(['git', 'ls-files', 'LICENSE*', 'README*', 'deploy', 'backend/resources'], text=True, encoding='utf-8').splitlines()
-    for target in targets(args.simple):
-        binary = output / ('sub2api.exe' if target['goos'] == 'windows' else 'sub2api')
-        env = dict(os.environ, CGO_ENABLED='0', GOOS=target['goos'], GOARCH=target['goarch'])
-        flags = f'-s -w -X main.Version={version} -X main.Commit={sha} -X main.Date={date} -X main.BuildType=release'
-        subprocess.run(['go', 'build', '-tags', 'embed', '-trimpath', '-ldflags', flags, '-o', str(binary), './cmd/server'], cwd='backend', env=env, check=True)
-        name = archive_name(version, target)
-        archive = inputs / name
-        if target['goos'] == 'windows':
-            with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as dest:
-                dest.write(binary, 'sub2api.exe')
-                for file in files:
-                    dest.write(file, file)
-        else:
-            with tarfile.open(archive, 'w:gz') as dest:
-                info = dest.gettarinfo(binary, 'sub2api')
-                info.mode = 0o755
-                with binary.open('rb') as source:
-                    dest.addfile(info, source)
-                for file in files:
-                    dest.add(file, file, recursive=False)
-        manifest = {'sha': sha, 'version': version, 'target': target, 'archive': name, 'sha256': sha256(archive)}
-        (inputs / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(manifest) + '\n', encoding='utf-8')
-        binary.unlink()
+    # Never embed an accumulated development dist or depend on deleting its files.
+    # Go's build-only overlay hides old assets and maps only this Vite invocation's output.
+    with tempfile.TemporaryDirectory(prefix='frontend-', dir=output) as work:
+        work = Path(work)
+        frontend = work / 'dist'
+        subprocess.run([pnpm, 'exec', 'vite', 'build', '--config', 'vite.config.ts',
+                        '--outDir', str(frontend), '--emptyOutDir'], cwd='frontend', check=True)
+        if not (frontend / 'index.html').is_file():
+            raise ValueError('frontend build did not produce index.html')
+        dist = Path('backend/internal/web/dist').resolve()
+        replacement = {str(file.resolve()): '' for file in dist.rglob('*') if file.is_file()}
+        for file in frontend.rglob('*'):
+            if file.is_file():
+                replacement[str(dist / file.relative_to(frontend))] = str(file.resolve())
+        overlay = work / 'overlay.json'
+        overlay.write_text(json.dumps({'Replace': replacement}), encoding='utf-8')
+        for target in targets(args.simple):
+            binary = work / ('sub2api.exe' if target['goos'] == 'windows' else 'sub2api')
+            env = dict(os.environ, CGO_ENABLED='0', GOOS=target['goos'], GOARCH=target['goarch'])
+            flags = f'-s -w -X main.Version={version} -X main.Commit={sha} -X main.Date={date} -X main.BuildType=release'
+            subprocess.run(['go', 'build', '-overlay', str(overlay), '-tags', 'embed', '-trimpath', '-ldflags', flags, '-o', str(binary), './cmd/server'], cwd='backend', env=env, check=True)
+            if not 0 < binary.stat().st_size <= MAX_UPDATE_BINARY_BYTES:
+                raise ValueError('build exceeds online updater binary limit; inspect embedded inputs')
+            name = archive_name(version, target)
+            archive = inputs / name
+            if target['goos'] == 'windows':
+                with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as dest:
+                    dest.write(binary, 'sub2api.exe')
+                    for file in files:
+                        dest.write(file, file)
+            else:
+                with tarfile.open(archive, 'w:gz') as dest:
+                    info = dest.gettarinfo(binary, 'sub2api')
+                    info.mode = 0o755
+                    with binary.open('rb') as source:
+                        dest.addfile(info, source)
+                    for file in files:
+                        dest.add(file, file, recursive=False)
+            manifest = {'sha': sha, 'version': version, 'target': target, 'archive': name, 'sha256': sha256(archive)}
+            (inputs / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(manifest) + '\n', encoding='utf-8')
+            binary.unlink()
     verify(argparse.Namespace(input=str(inputs), version=version, sha=sha, simple=args.simple))
     checksums = ''.join(f'{sha256(file)}  {file.name}\n' for file in sorted(inputs.glob('sub2api_*')))
     (output / 'checksums.txt').write_text(checksums, encoding='utf-8')

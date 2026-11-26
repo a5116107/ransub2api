@@ -2662,3 +2662,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 本地唯一工作树 `production` 与自有 `origin/production` 同为 `e76658b5185fe1fde93d689980ac1cc729c8b00d`；`v2.25.2-ransub.3` tag仍指向预构建源`c0a968c5`且是Latest，远端`v2.19.1` ref API返回404。PR列表、祖先关系和远端引用均为只读核验；文档提交使用`[skip ci]`，无新workflow run。
 - SSH技能登记使用主机别名`hk2`，OpenSSH alias为`srv-hk2`。本轮先用错误键`srv-hk2`作为登记别名导致本地`found 0`，随后正确以`hk2`核验：direct报`Timeout opening channel`，SOCKS5报`Error reading SSH protocol banner`。这是新的连接失败证据，仍未取得生产日志、数据库状态或进程SHA；没有重启、部署、迁移或改动生产数据。
 - 生产仍停留在已验证的`2.25.2-ransub.2`。D3.2生产验收等待可用远程命令通道或服务器控制台提供截图时段的脱敏应用日志和PostgreSQL状态；后续必须先核实共同根因、回滚材料和加载身份，再决定切换`.3`。不将公网`/health 200`视为业务恢复，不将PR无冲突/合并视为生产验收。
+
+### 2026-11-26：.3 生产同步、磁盘阻塞与在线更新体积根因
+
+- hk2 管理通道已恢复。16:22–16:25 HKT 应用日志证实账号9上游500后 switching/switch_count=1，切账号14并200，耗时约43.684秒；同窗未检出应用HTTP502。不把该单次成功当成所有窗口或旧长会话恢复。9/14的质量计划检测gpt-6.1-terra而业务是gpt-6.1-sol，模型证据不混用；未据猜测改变调度。
+- 临时预演工具先因数组响应调用dict.get失败，继而把空结果null断言为[]失败；只修检查器，最终旧.2→.3→回退.2→再.3四阶段通过、497迁移/16账号/2组/1用户/1Key及11张流量/余额预测/守护/工单历史表摘要前后一致。结果tool-monitor-production-rehearse.log，不降低业务字段保护；最初失败仍保留于远端startup及本机诊断证据。
+- .3 Release已有归档但GHCR缺少运行镜像，docker pull实报not found。调用既有prebuilt_only发布路径，run45812251767仅publish-prebuilt-image成功、其余7作业skipped，无云端源码编译/测试。镜像cfe51f48de4b640402ff2012c456feec288faaab8eb7232887df325aa8c2534b与程序676d64bf2c547123dbdf2ba183cd8ac7f10522d0819fdca2169cadcc0ad47cec、源c0a968c58ab2a9813590e6e1d5c37bc7dfe404b4匹配。
+- 拉取后根盘使用100%、可用约249MB。用户明确批准只保留.2/.3的自有镜像缓存；按精确ID/标签/所有运行和停止容器引用核对，非force删除11个更旧自有镜像。未动其他项目、官方镜像、数据库/配置/历史程序/备份；容器ID/状态不变。实际free从315232256增至8769822720字节，delta8454590464；不把镜像虚拟大小相加冒作实测空间。预览/结果分别tool-monitor-image-cleanup-preview.json与tool-monitor-image-cleanup.json。
+- .3生产排空升级、真实后台优雅重启及同镜像重建通过，PG f30095818cb1/Redis5b796d6478e0不变；切换时保护字段无变化，保留database.cutover-894da3b1a062.dump（SHA c91d90690fcf8c9202efaa1bb0d86e6753bf0acd0f53ee04eae04bfda9657c0f）和.2镜像/程序/配置。verify退出0/current=latest=2.25.2-ransub.3/has_update=false/warning=null，维护路由已撤。公网public-smoke退出0：登录/auth-me/performance/16账号timer、历史流量/守护、1440/390浏览器及唯一SSE完成/唯一用量通过；无pageerror/HTTP错误/非登录写入。只读performance按源码返回ID映射，冒烟初版误断言list后已纠正，不改业务接口。
+- 在线更新失败形成明确日志证据：15:54:15与17:23:39均为extraction failed: binary too large:1072685216 bytes(max524288000)。.3的ELF rodata=927875417字节；本机开发dist有20047文件/909605706字节、多代旧哈希资源。显式Vite配置/emptyOutDir后旧资源仍存在，不能归因成配置开关遗漏；手动精确删除一个已证不在本次输出的旧资源被宿主policy拒绝，未换工具/移动/重试清理。
+- 修复既有local_build：Vite显式读取受版本控制的vite.config.ts，输出到本次release目录内的单个TemporaryDirectory；Go官方-overlay将旧dist文件标为不存在、仅映射本次新文件，既不删受保护旧目录，也不把旧资源嵌进新包。真实最小Go程序验证只嵌入current.js、旧文件原样保留且scratch退出回收。发布verify新增与现有更新器一致的500MiB归档/程序边界及空/缺失/重复/符号链接拒绝，不放大运行时解压上限、不重写已公开.3；准备.4新补丁。
+- 新回归先在旧实现真实失败；最终Linux本地unittest discover为89 tests/OK/0跳过，ruff E9/F63/F7/F82为All checks passed。Windows全套87测试原结果含bash模拟和POSIX mode不适配（7 errors/1failure），原样保留；Windows本次4项核心定向通过，Linux相同范围含完整工具链通过。未把Linux夹具当生产检测或供应商质量证据。STATE保持原28项20done/8部分及原外部验收；后续小包构建/在线更新尚待实际加载与用户流验收。
