@@ -6,10 +6,10 @@
 R1.2：v2.25.4=d8f00260f44b整合；唯一integration/upstream-stable，无新工作树/编译测试CI。
 用户选择官方诊断退役，先备份；28冲突已解，流量/余额预测/守护/工单及自研边界保留。
 已验：PG联合195/195、直接扣费race重复两轮通过；UI186/186，类型/定向eslint与Windows vet0。
-PR8无冲突；Linux vet/lint0、UI186/类型0。全unit发现误用Redis3；改Redis5重验，Release暂时停用。
+Redis5全service通过；handler余4叶已修，媒体/上下文875全过；原全量6失败/43跳过保留。
 线上00:39 HKT仍.2/463bf7a00/加载67e330aebdf9、六容器健康，尚未发布或切换。
 候选6e218ec22/verified已构建；副本498→499→498→499通过，诊断实际恢复/重退役、7资源回收。
-下一收Redis5全unit64959后合并PR8/发行/切换；Release待恢复。旧账退役不执行，原28项20done/8部分。
+下一.4自研.2同源构建/副本复核及race，后合并PR8/发行/切换；未发布，Release仍停用。
 原来源/缓存域/插件计量/旧客户端等待及受保护历史scratch保持；轮换凭据文件不存在。
 <!-- resume:end -->
 

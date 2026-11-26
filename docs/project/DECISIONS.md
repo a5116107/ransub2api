@@ -2766,3 +2766,8 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 生产副本四阶段最终退出0/production_changed=false：.2基线498迁移→.4候选499→实际诊断数据恢复后.2回退498→再次.4退役499；每阶段核对/proc/1/exe实际SHA及原管理员/16账号/性能API，优先调度仍关闭。11张流量/预测/守护/工单历史摘要前后一致，未执行任何供应商探测。
 - 副本专项诊断归档216225536B/SHA d7d0fbbd9daff8834f8eae4a04cbd02dd222f300735dceba5fc94220f0598cc0，耗时139234行/连接150386行；恢复schema+data后行数/内容摘要一致，只有400_drop_request_diagnostics.sql迁移状态撤销，再升后同checksum重新执行。diagnostic_rollback_restored和diagnostic_reupgrade_retired均true；原账务/11历史表和其余迁移checksum不回写。六个隔离容器和网络共7资源按捕获ID回收全部true；实际生产始终仍为旧.2。
 - 证据沿原sub2api-quality-evidence：upstream-v2254-production-rehearse.log及upstream-v2254-diagnostic-rollback.json；未把副本或备份存在冒称生产已升级。公网冒烟已准备同一请求的唯一usage/claim/quote、canonical金额及wallet_debit关联，只发送一条必要SSE，不根据并发生产余额差猜测本请求账目。
+
+- Redis5纠正环境完整service/handler结果：service整包536.286s通过；共43264条pass/43skip/6fail事件，失败归于handler四叶而非全部通过。两叶Goal测试仍期待旧external_goal_objective，而生产既定安全修复已用保留原namespace/name/output的JSON不可信封套；保留原内容/身份/幂等及真工具call_id断言，按实际已批准边界补专用封套校验，不改生产归一化。
+- 真实视频缺口：OpenAIVideoEndpointCreate遗漏于IsAsyncVideoCreate，导致已接受任务未保存归属/计费快照且deferred WriteResponse不执行，最终空200；原202断言在旧实现实证失败。原位补异步分类并明确openai提供方（不借grok身份），保留完整生命周期、同上游task ID的账号/Key隔离、延迟唯一计费等断言。该修复不宣称OpenAI已支持区域资金或共享Key持久任务的全部契约；未支持提供方仍沿既有权威拒绝，不自动启用生产视频或检测。
+- 媒体统一入口的区域查询转发位于审核代码之前，触发原静态顺序检查。把该query-only委托移到生成请求的审核/准入之后、其他路由/选账号/计费之前；查询本身仍不执行生成审核、不分配生成槽位。原审核顺序测试不删不放宽，既有区域查询及资金拒绝/恢复继续验证。
+- 修复后媒体/Goal/审核/异步/Seedance/MiniMax两包专项875项全部通过/0失败/0跳过，保留原6失败和43skip，不将它们改报全仓绿；仅对受影响原调用链扩大验证，未改迁移和前端。准备未公开.4自研.2候选，.1只是已验迁移的内部候选，不改写已有公开发行或伪造source。
