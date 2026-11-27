@@ -70,7 +70,8 @@ REQUEST_UPSTREAM = WEBSOCKET_IO + r'''import json,threading,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 lock=threading.Lock()
 gate=threading.Event();gate.set()
-state={'active':0,'peak':0,'calls':0,'hold_next':False,'ws_calls':0,'ws_continuations':0}
+state={'active':0,'peak':0,'calls':0,'hold_next':False,'partial_usage_next':False,
+       'ws_calls':0,'ws_continuations':0,'ws_cancelled':0}
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def reply(self,body):
@@ -109,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/arm':
             with lock:
                 if state['active']:self.send_error(409);return
-                state['hold_next']=True;gate.clear()
+                state['hold_next']=True;state['partial_usage_next']=body.get('partial_usage') is True;gate.clear()
             self.reply({'armed':True});return
         if self.path=='/release':
             gate.set();self.reply({'released':True});return
@@ -123,10 +124,14 @@ class Handler(BaseHTTPRequestHandler):
             state['active']+=1;state['calls']+=1
             state['peak']=max(state['peak'],state['active'])
             hold=state['hold_next'];state['hold_next']=False
+            partial_usage=state['partial_usage_next'];state['partial_usage_next']=False
             number=state['calls']
         try:
             rid='resp_rehearsal_'+str(number)
             emit({'type':'response.created','response':{'id':rid,'status':'in_progress'}})
+            if partial_usage:
+                emit({'type':'response.in_progress','response':{'id':rid,'status':'in_progress','model':body['model'],
+                      'usage':{'input_tokens':3,'output_tokens':2}}})
             emit({'type':'response.output_text.delta','delta':'fixture OK'})
             deadline=time.monotonic()+30
             while hold and not gate.wait(.1):
@@ -139,7 +144,9 @@ class Handler(BaseHTTPRequestHandler):
                   'output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'fixture OK'}]}],
                   'usage':{'input_tokens':16,'output_tokens':4}}})
             return rid
-        except (BrokenPipeError,ConnectionResetError,TimeoutError):pass
+        except OSError as error:
+            if hold and not isinstance(error,TimeoutError) and self.headers.get('Upgrade','').lower()=='websocket':
+                with lock:state['ws_cancelled']+=1
         finally:
             with lock:state['active']-=1
 ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()
@@ -156,7 +163,7 @@ request=Request('http://127.0.0.1:8080/v1/responses',headers=headers,
                                  'store':False,'max_output_tokens':32}).encode())
 result={'status':0,'completed':0,'deltas':0,'errors':0,'cancelled':False,'client_request_id':'','error_code':''}
 if p.get('websocket'):
-    result.update(close_code=0,response_ids=[])
+    result.update(close_code=0,response_ids=[],active_response_id='')
     with socket.create_connection(('127.0.0.1',8080),timeout=15) as sock:
         with sock.makefile('rb',buffering=0) as stream:
             key=base64.b64encode(secrets.token_bytes(16)).decode()
@@ -187,15 +194,21 @@ if p.get('websocket'):
                     if opcode==10:continue
                     if opcode!=1:raise ValueError('fixture expected text event')
                     event=json.loads(raw);kind=event.get('type')
+                    if kind in ('response.created','response.in_progress'):
+                        result['active_response_id']=event.get('response',{}).get('id','')
                     if kind in ('response.failed','response.incomplete','error'):
                         result['errors']+=1
                         result['error_code']=event.get('error',{}).get('code','')
-                    if kind=='response.output_text.delta' and event.get('delta'):result['deltas']+=1
+                    if kind=='response.output_text.delta' and event.get('delta'):
+                        result['deltas']+=1
+                        if p.get('cancel'):
+                            result['cancelled']=True;break
                     if kind=='response.completed':
                         result['completed']+=1;result['response_ids'].append(event['response']['id']);break
                 else:raise ValueError('fixture WebSocket terminal absent')
-                if result['close_code']:break
-            if not result['close_code']:ws_send(sock,8,struct.pack('!H',1000),True)
+                if result['close_code'] or result['cancelled']:break
+            if p.get('cancel')=='abort':sock.shutdown(socket.SHUT_RDWR)
+            elif not result['close_code']:ws_send(sock,8,struct.pack('!H',1000),True)
     print(json.dumps(result));raise SystemExit(0)
 try:
     with build_opener(ProxyHandler({})).open(request,timeout=15) as response:
@@ -491,11 +504,12 @@ class Rehearsal:
                 and response['errors'] == 0 and not response['cancelled'], 'mixed stream did not complete exactly once')
         return self.verify_request_settlement(response['client_request_id'], account, group, multiplier)
 
-    def verify_request_settlement(self, request_id, account, group, multiplier, *, websocket=False):
+    def verify_request_settlement(self, request_id, account, group, multiplier, *, websocket=False,
+                                  input_tokens=16, output_tokens=4):
         require(re.fullmatch(r'[A-Za-z0-9_-]{1,255}', request_id), 'invalid mixed-stream request identity')
         billing_id = request_id if websocket else 'client:' + request_id
         query = f"""SELECT jsonb_build_object('usage',count(*),'account',min(u.account_id),'group',min(u.group_id),
-            'rate',min(u.rate_multiplier),
+            'rate',min(u.rate_multiplier),'input_tokens',min(u.input_tokens),'output_tokens',min(u.output_tokens),
             'claims',(SELECT count(*) FROM usage_billing_dedup WHERE request_id='{billing_id}'),
             'quotes',(SELECT count(*) FROM usage_billing_quotes WHERE request_id='{billing_id}'),
             'canonical_matches',bool_and(q.canonical_actual_cost=u.actual_cost),
@@ -514,6 +528,8 @@ class Rehearsal:
         require(observed['account'] == account and observed['group'] == group
                 and observed['rate'] == multiplier, 'mixed stream changed account/group or selling rate')
         require(observed['canonical_matches'] and observed['debit_matches'], 'mixed stream debit attribution mismatch')
+        require(observed['input_tokens'] == input_tokens and observed['output_tokens'] == output_tokens,
+                'mixed stream billed usage differs from the actual current upstream turn')
         return observed
 
     def exercise_websocket_overlap(self, peer, keys, accounts, groups, rates):
@@ -569,8 +585,51 @@ class Rehearsal:
             require(all(after_rows[k] - before_rows[k] == 18 for k in before_rows),
                     'mixed WS admission rejection or retry created extra billing rows')
             proof['rejection_billing_rows'] = 0
+            proof['cancellations'] = []
+            cancellation_rows = json.loads(self.sql(row_counts))
+            for index, (first, second) in enumerate(((peer, self.app), (self.app, peer))):
+                for close_mode in ('normal', 'abort'):
+                    before = self.wait_request_state(active=0, slots=0)['calls']
+                    case = f'mixed-ws-cancel-{index}-{close_mode}'
+                    attempt = {'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
+                               'close_mode': close_mode, 'status': 'running'}
+                    proof['cancellations'].append(attempt)
+                    self.fixture_api('/arm', {'partial_usage': True})
+                    try:
+                        cancelled = self.stream_request(first, keys[index], case, websocket=True,
+                                                        cancel=True if close_mode == 'normal' else 'abort')
+                        require(cancelled['status'] == 101 and cancelled['cancelled'] and cancelled['completed'] == 0
+                                and cancelled['deltas'] > 0 and not cancelled['response_ids'],
+                                'native WS cancellation accepted a terminal or never received output')
+                        ended = self.wait_request_state(active=0, slots=0, calls=before + 1)
+                        require(ended['ws_cancelled'] == len(proof['cancellations']),
+                                'native WS cancellation did not end the physical upstream generation')
+                        attempt.update(downstream_completed=False, physical_upstream_ended=True,
+                                       slots_released=True, replayed=False)
+                    finally:
+                        self.fixture_api('/release', {})
+                    partial = self.verify_request_settlement(cancelled['active_response_id'], accounts[index],
+                            groups[index], rates[index], websocket=True, input_tokens=3, output_tokens=2)
+                    recovered = self.stream_request(second, keys[1-index], case+'-recovery', websocket=True)
+                    require(recovered['status'] == 101 and recovered['completed'] == 1 and recovered['deltas'] > 0
+                            and not recovered['errors'] and not recovered['close_code'],
+                            'peer did not recover after the native WS cancellation')
+                    self.verify_request_settlement(recovered['response_ids'][0], accounts[1-index],
+                                                   groups[1-index], rates[1-index], websocket=True)
+                    state = self.wait_request_state(active=0, slots=0, calls=before + 2)
+                    require(state['peak'] == 1, 'native WS cancellation/recovery exceeded physical capacity')
+                    attempt.update(status='compatible', partial_settlement=partial, recovery_unique_settlement=True)
+            after_rows = json.loads(self.sql(row_counts))
+            require(all(after_rows[k] - cancellation_rows[k] == 8 for k in cancellation_rows),
+                    'native WS cancellation/recovery duplicated or lost a partial usage/claim/quote')
+            require(state['ws_calls'] == 24 and state['ws_cancelled'] == 4,
+                    'native WS cancellation fell back to HTTP or failed to terminate')
+            proof.update(cancelled_turns=4, cancellation_recovery_turns=4, partial_usage_unique=True)
         except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
             proof['status'] = 'failed'
+            for attempt in proof.get('cancellations', []):
+                if attempt['status'] == 'running':
+                    attempt['status'] = 'failed'
             raise
 
     def exercise_request_overlap(self, token):

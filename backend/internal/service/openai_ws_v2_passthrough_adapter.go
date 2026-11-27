@@ -1794,9 +1794,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	// Relay has joined both directions. Only this unfinished turn may settle
 	// here: completed terminal callbacks already consumed activeTurn. Never use
-	// relayResult.Usage, which aggregates earlier completed turns.
+	// relayResult.Usage, which aggregates earlier completed turns. Ordinary
+	// passthrough must also retain actual usage; an unobserved legacy turn keeps
+	// its existing nil result instead of becoming an estimated zero charge.
 	var unfinishedResult *OpenAIForwardResult
-	if smartProtocolStrict(ctx) && !pendingUpstreamTurn.Load() && relayResult.UnfinishedTurn != nil {
+	if !pendingUpstreamTurn.Load() && relayResult.UnfinishedTurn != nil &&
+		(smartProtocolStrict(ctx) || relayResult.UnfinishedTurn.UsageObserved) {
 		turn := relayResult.UnfinishedTurn
 		requestModel, upstreamModel := usageMeta.turnModels(turn.RequestModel)
 		unfinishedResult = &OpenAIForwardResult{

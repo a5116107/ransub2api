@@ -2931,3 +2931,20 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原位删除H:/Root/DevCache/tmp/sub2api-stable-sync/public-smoke.py的四行生产负例及过时v2252请求前缀；保留唯一正常SSE、真实失败/用量和唯一结算检查。operator HTTP请求显式标识RanSub2API-Production-Smoke/1.0，结果保存网关/客户端请求ID及独立probe_id；不按UA隐藏或豁免错误，不删历史400、不放宽工具校验，不为使错误列表干净而改数据库。原发布报告保持，不覆盖其中负例证据；活跃生产探针源码SHA256 b79d65b8d55ad978ef00741cf1814e7c38247627d449c68781ee0d56f178e2dc。
 - 已用真实脚本AST的业务段离线执行复现RED：原脚本实际向拦截会话提交2次，违反生产只提交正常请求的断言；修后8个成功/HTTP失败/不完整/重复终态/流内失败/断开/重复运行场景均只提交1次，故障仍失败且不重试，真实网络请求0；结果脱敏且返回ID和标记完整。ruff E9/F63/F7/F82通过，旧genuine_orphan_rejected/a real orphan result/json=orphan/v2252-public-引用0。原Go上下文恢复/历史保留/真实孤立工具结果拒绝三个根测试本地通过1.502s；既有工具roundtrip离线9项通过0.009s，不再向生产发送负向请求来证明本地拒绝行为。
 - 在原release-tools/README补齐生产验收边界并在唯一设计/STATE更新D9.4：负向仅本地或隔离副本，生产只正常有界调用且可追踪、真实故障不隐藏。此前“浏览器HTTP错误0”仅指浏览器监听范围，未覆盖Python负例，并非生产零错误；本次明确纠正该口径与责任归属。诊断首个可选列元数据查询因字段差异失败，改用to_jsonb只读投影后取证成功，未改表/配置。D9.4明确范围done，原28项20done/8部分保持，生产应用继续已验.6/1dd26a322；本轮不发版、不部署、不运行CI，原记录及所有真实故障保留。
+
+
+### 2026-11-27 D9.5 Gemini与Codex原生搜索工具冲突：专用profile与真实工具两轮验收
+
+- 生产错误11431/request1121c89d-127a-4add-bc2a-d3890fde69b7来自Codex0.171.0，Gemini账号15/group3，实际供应商400而非自动检测负例；最小文本与high思考原生请求均200。用真实CLI的脱敏工具声明经现有ForwardAsResponses转换，12函数声明与google_search混用返回400；仅移除google_search、保留原12函数及参数立即200。xhigh已正确映射high，不把该次失败归因模型全面不可用、额度或选号；不把同账号其他成功样本冒充此请求恢复。
+- 用户明确选择“为Gemini建专用配置，关闭内置搜索”。本机原位新增.codex/gemini.config.toml，固定gemini-4-argon/right/xhigh/web_search=disabled，继承原终端/文件/MCP及认证；未修改全局config.toml、auth、其他profile、生产账号/模型映射或网关转换。不在服务端静默剥离搜索功能。CLI0.171.0的-p语义为独立<name>.config.toml叠加基配置；启动命令codex -p gemini --no-daemon，仅新会话生效。
+- 真实CLI读取该profile接本地loopback SSE与stdio MCP夹具：exit0/1请求/最终OK，exec_command等函数和profile_ping声明仍在，无web_search；基配置SHA前后相同。随后经生产sub.acompany.cv/v1、原认证执行只读PowerShell Write-Output GEMINI_PROFILE_OK一次并观察回传后完成第二轮，exit0/19.37s/最终标记匹配，工具exit0；actual usage input51191/output218。该生产验收仅关闭探测进程的外部MCP初始化、采用只读sandbox/HTTP/零重试，不写入持久配置。MCP声明/原配置保留由本地夹具与文件哈希证明，不将其表述为每个真实MCP业务调用均已验证。
+- 证据gemini-error11431.json、gemini-native-positive-probes.json、gemini-codex-native-differential.json、gemini-profile-local-verification.json及gemini-profile-production-verification.json均位于既有quality-evidence目录；仅存脱敏参数/工具元数据和结果，不保存真实对话/凭据。第一次编写验证脚本的外层引号冲突导致SyntaxError、尚未执行CLI，改用文件补丁后实际验证通过。D9.5范围done，D9旧长会话/全能力混版等原验收继续pending，原28项20done/8部分不变。
+
+
+### 2026-11-27 D8.5普通WS取消漏已观测用量：隔离真实CLI失败与原位修复
+
+- 扩展原local-rehearse/overlap-requests和同一fixture codec，增加双向正常关闭/硬断开、当前轮partial usage input3/output2与peer恢复。固定.5源8a3bf4eec和.6源1dd26a322归档校验/实际进程SHA一致，hk2仅内部Docker网络、全新tmpfs PG18/Redis8/合成账号Key，无端口/供应商调用/生产读写。管理并行与HTTP6成功/2取消排空/4拒绝、原生WS18轮/6续接/6拒绝及16/4唯一结算通过；首个普通透传取消后活动和共享槽位归零、无重放，但本轮3/2 usage未持久化，CLI正确exit1/passed=false。8个捕获ID资源全部移除、driver/candidate目录回收；原失败mixed-ws-cancel-remote.log保留，不把物理释放当作结算完成。
+- 原adapter仅在smartProtocolStrict时构造relayResult.UnfinishedTurn，普通passthrough把已观测的unfinished用量丢为nil，handler因无结果不记账。新增真实网络回归关闭SmartProtocol，首轮与有上一成功轮两场景均明确失败于current-turn结果nil（3.846s），不是编译失败。原位移除对已观测usage的smart专属限制，仍检查pendingUpstreamTurn并只取当前unfinished，不取aggregate；无usage的旧模式保持nil、不估算零和不借上轮，完整轮callback及activeTurn原子归零防重记保持。追加未知usage×有无前轮与原smart八场景继续验收。
+- 新工具测试39例已验；为实际变更重跑release-tools矩阵，Windows原生43例有7个shell路径错误及1个POSIX chmod断言失败（未改断言），转同源小文件到WSL原生/tmp隔离目录后matrix43/1.352s、rehearsal39/1.329s均通过，scratch自动清理；ruff E9/F63/F7/F82通过。工具不添加skip或降低500MiB/身份/结算边界。D8.5原旧版对仍不兼容，不授权滚动混流；生产继续.6，修复及后续官方整合完成验证前不宣称已发布。
+
+- 原位修复后，普通无usage/有usage×有无前轮4场景与原smart8场景通过（service28.801s）；扩展透传/取消/轮次/额度/Relay边界service44.457s、openai_ws_v2 6.545s通过，go vet两包exit0。最终工具39/1.659s与ruff/diff-check通过。原`.5/.6`失败证据保留，D8.5仍部分；新版修复尚未发行，生产未变。并行出现HomeView、landing中英文及home组件变更，为其他工作所有，未纳入本次提交/清理；仅精确stage本次后端/工具/状态与设计。后续R1.6继续沿串行排空发布，不以旧版部分验收替代全混版许可。

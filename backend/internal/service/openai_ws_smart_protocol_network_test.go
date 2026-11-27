@@ -242,6 +242,9 @@ func (f *smartProtocolNetwork) events(body []byte) []string {
 		return append(events, `{"type":"response.output_text.delta","delta":""}`, fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":0}}}`, id))
 	}
 
+	if f.fail == "p1_unknown" && seed == "partial" {
+		return append(events, `{"type":"response.in_progress","response":{"id":"resp_partial"}}`)
+	}
 	if strings.HasPrefix(f.fail, "p1_") && seed == "partial" {
 		return append(events, `{"type":"response.in_progress","response":{"id":"resp_partial","usage":{"input_tokens":3,"output_tokens":2}}}`)
 	}

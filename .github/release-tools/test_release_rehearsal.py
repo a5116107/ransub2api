@@ -379,9 +379,54 @@ class ReleaseRehearsalTest(unittest.TestCase):
             thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
 
+    def test_native_websocket_client_cancels_before_accepting_terminal(self):
+        import socket
+        import threading
+        import time
+        namespace = {}
+        code = rehearsal.REQUEST_UPSTREAM.replace("ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()",
+                                                   "server=ThreadingHTTPServer(('127.0.0.1',0),Handler)")
+        exec(code, namespace)
+        server = namespace['server']
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connect = socket.create_connection
+        try:
+            for cancel in (True, 'abort'):
+                with self.subTest(cancel=cancel):
+                    with namespace['lock']:
+                        namespace['state']['hold_next']=True
+                        namespace['state']['partial_usage_next']=True
+                        namespace['gate'].clear()
+                    stdout = io.StringIO()
+                    payload = {'key':'private-fixture-key','case':'cancel-fixture','websocket':True,'cancel':cancel}
+                    with patch('sys.stdin', io.StringIO(json.dumps(payload))), patch('sys.stdout', stdout), \
+                            patch('socket.create_connection', side_effect=lambda addr, **kwargs: connect(server.server_address, **kwargs)):
+                        with self.assertRaises(SystemExit) as done:
+                            exec(rehearsal.STREAM_CLIENT, {})
+                    self.assertEqual(done.exception.code, 0)
+                    result = json.loads(stdout.getvalue())
+                    self.assertTrue(result['cancelled'], 'WebSocket cancellation must stop before accepting a completed terminal')
+                    self.assertEqual(result['completed'], 0)
+                    self.assertGreater(result['deltas'], 0)
+                    self.assertTrue(result['active_response_id'].startswith('resp_rehearsal_'))
+                    self.assertEqual(result['response_ids'], [])
+                    self.assertNotIn('private-fixture-key', stdout.getvalue())
+                    deadline = time.monotonic() + 3
+                    while namespace['state']['active']:
+                        self.assertLess(time.monotonic(), deadline, 'physical upstream stayed active after cancellation')
+                        time.sleep(.01)
+                    self.assertEqual(namespace['state']['ws_cancelled'], 1 if cancel is True else 2)
+        finally:
+            namespace['gate'].set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
     def test_websocket_settlement_uses_upstream_turn_id_not_connection_id(self):
         run = rehearsal.Rehearsal(self.args)
-        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,
+        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,'input_tokens':16,'output_tokens':4,
                     'canonical_matches':True,'debit_matches':True}
         with patch.object(run, 'sql', return_value=json.dumps(observed)) as sql:
             run.verify_request_settlement('resp_fixture_1', 3, 4, .12, websocket=True)
@@ -396,6 +441,16 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.exercise_websocket_overlap('peer', [], [], [], [])
         self.assertEqual(run.result['websocket_overlap']['status'], 'failed')
         self.assertFalse(run.result['mixed_version_isolation_verified'])
+
+    def test_cancelled_websocket_settlement_keeps_only_observed_turn_usage(self):
+        run = rehearsal.Rehearsal(self.args)
+        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,'input_tokens':3,'output_tokens':2,
+                    'canonical_matches':True,'debit_matches':True}
+        with patch.object(run, 'sql', return_value=json.dumps(observed)):
+            self.assertEqual(run.verify_request_settlement('resp_partial', 3, 4, .12, websocket=True,
+                                                           input_tokens=3, output_tokens=2), observed)
+            with self.assertRaisesRegex(RuntimeError, 'actual current upstream turn'):
+                run.verify_request_settlement('resp_partial', 3, 4, .12, websocket=True)
 
     def test_stream_client_observes_terminal_and_cancellation_without_echoing_credentials(self):
         from unittest.mock import MagicMock
@@ -458,12 +513,12 @@ class ReleaseRehearsalTest(unittest.TestCase):
     def test_settlement_checks_unique_rows_price_and_debit_owner(self):
         run = rehearsal.Rehearsal(self.args)
         response = {'status':200,'completed':1,'deltas':1,'errors':0,'cancelled':False,'client_request_id':'valid-id'}
-        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,
+        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,'input_tokens':16,'output_tokens':4,
                     'canonical_matches':True,'debit_matches':True}
         with patch.object(run, 'sql', return_value=json.dumps(observed)):
             self.assertEqual(run.verify_stream_settlement(response, 3, 4, .12), observed)
         for field,value in [('usage',2),('claims',2),('quotes',2),('account',9),('group',9),('rate',.15),
-                            ('canonical_matches',False),('debit_matches',False)]:
+                            ('canonical_matches',False),('debit_matches',False),('input_tokens',3),('output_tokens',2)]:
             with self.subTest(field=field), patch.object(run, 'sql', return_value=json.dumps(dict(observed, **{field:value}))):
                 with self.assertRaises(RuntimeError):
                     run.verify_stream_settlement(response, 3, 4, .12)

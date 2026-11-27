@@ -91,3 +91,69 @@ func TestSmartProtocolPassthroughPartialUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAIWSPassthroughLegacyCancellationPreservesObservedUsage(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		for _, prior := range []bool{false, true} {
+			t.Run(fmt.Sprintf("usage_%t/prior_%t", observed, prior), func(t *testing.T) {
+				failure := "p1_unknown"
+				if observed {
+					failure = "p1_drain"
+				}
+				f := newSmartProtocolNetwork(t, "ws", true, failure)
+				f.cfg.Gateway.OpenAIWS.SmartProtocol.Enabled = false
+				f.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+				f.cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+				f.account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModePassthrough
+				c := f.dial()
+				if prior {
+					f.send(c, "completed", "", 100)
+					f.terminal(c)
+					require.Equal(t, 7, f.result().Usage.OutputTokens)
+				}
+				f.send(c, "partial", "", 100)
+				for {
+					_, raw, err := c.Read(f.ctx)
+					require.NoError(t, err)
+					if gjson.GetBytes(raw, "type").String() == "response.in_progress" {
+						break
+					}
+				}
+				_ = c.CloseNow()
+				select {
+				case err := <-f.errors:
+					require.NoError(t, err, "legacy downstream cancellation remains graceful")
+				case <-time.After(6 * time.Second):
+					t.Fatal("legacy cancellation did not terminate the physical upstream")
+				}
+				var result *OpenAIForwardResult
+				select {
+				case result = <-f.results:
+				default:
+				}
+				if observed {
+					require.NotNil(t, result, "observed current-turn usage must survive legacy cancellation")
+					require.True(t, result.ObservedUsageOnError)
+					require.False(t, result.UsageUnavailable)
+					require.Equal(t, 3, result.Usage.InputTokens)
+					require.Equal(t, 2, result.Usage.OutputTokens)
+					require.Equal(t, "resp_partial", result.RequestID)
+					require.Empty(t, result.UpstreamTerminalEvent)
+				} else {
+					require.Nil(t, result, "missing current-turn usage must not estimate or reuse an earlier turn")
+				}
+				select {
+				case <-f.results:
+					t.Fatal("legacy cancellation duplicated a turn result")
+				default:
+				}
+				want := int32(1)
+				if prior {
+					want = 2
+				}
+				require.Equal(t, want, f.wsCalls.Load(), "legacy cancellation must not replay a generation")
+				require.Zero(t, f.httpCalls.Load())
+			})
+		}
+	}
+}
