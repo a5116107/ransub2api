@@ -30,6 +30,12 @@ bash -n .github/release-tools/release-images.sh
 ```
 
 
+## Production verification boundaries
+
+Production smoke checks send only valid, bounded positive business requests. Run malformed input, orphan tool output, injected upstream failures and other expected-error cases in local tests or disposable isolated rehearsals, not against the production URL with a real user's key. An expected rejection still creates a real production error record and can mislead operators.
+
+Identify operator HTTP probes with `RanSub2API-Production-Smoke/1.0` (tool round trips keep their existing tool-verification identity). Preserve returned gateway/client request IDs and the probe ID in sanitized results; never store keys or conversation bodies. A failed positive probe stays failed and is investigated before another paid invocation. Do not hide errors by User-Agent, loosen request validation or delete historical error records to make a smoke check appear clean.
+
 ## Automatic custom stable channel without test CI
 
 The user-owned public channel is `a5116107/ransub2api`. Its `production` branch retains custom history. `sync-upstream.yml` tracks stable `ranxi2001/sub2api` releases every six hours. `upstream/stable` mirrors the pinned application sources with the owner's `.github/workflows` directory retained. Each tracking commit includes the raw upstream commit as a parent and in `Upstream-Commit`; all non-workflow files must match it exactly. This avoids requiring workflow-write credentials in Actions or importing upstream CI. Never use this tracking branch as a production artifact. The unrelated `a5116107/bps2api` fork is unchanged.
