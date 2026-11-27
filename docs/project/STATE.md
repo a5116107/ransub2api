@@ -3,12 +3,10 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-D8.3已验：原CLI双版.3/.4并行HTTP，共享Key1、6完整流/2取消排空/4零发送零计费拒绝；两轮及10资源清理通过。
-peer入站确认/失败日志指向红绿已修；Win/Linux各31工具测试/静态0。只证明本HTTP范围，完整混版保持false。
-R1.4进行中：整合官方becb95d40并发未知显示修复，保留自研；新增截图CI改手动，本地回归/单PR/.5副本发布待。
-生产.4源5e220a84a/制品9573785eed2a/镜像643ef532a01d保持；原28项20done/8部分与外部契约等待不变。
-本机Docker后端管道缺失，start误报已运行/restart120秒失败；已用服务器内部副本完成验收，不强杀其他进程。
-旧受保护scratch保留；本轮远程.rehearsal-mixed-requests小型工具副本待退出后回收；轮换凭据仍缺。
+D8.3 done：.3/.4实际CLI双向Key上限1、6完整流/2取消排空/4零计费拒绝及10资源回收通过，完整混版仍false。
+R1.4进行中：官方becb95d40并发未知修复已合入；admin完整race双轮12.556s、UI81/类型lint通过，待单PR/.5副本发布。
+生产.4源5e220a84a/程序9573785eed2a/镜像643ef532a01d保持；原28项20done/8部分不变，不CI。
+本机Docker后端恢复失败，已用远端隔离副本完成D8.3；远端小型工具副本待回收，旧受保护scratch不绕行。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -62,11 +60,11 @@ R1.4进行中：整合官方becb95d40并发未知显示修复，保留自研；�
 | R1.1 | done | PR7冲突/官方2.25.3/400迁移回退及.2发布/运行界面验收完成；原父项不关闭 |
 | R1.2 | done | PR8/官方2.25.4、诊断备份/恢复及499迁移回退、.2同源发行/实际加载/公网唯一结算已验 |
 | R1.3 | done | 官方70abfd1c5/混合复核与耗时标签、PG双轮race350/UI144/静态、PR9/副本回退及.3同源生产/UI/唯一结算已验 |
-| R1.4 | in_progress | 官方becb95d40并发未知显示兼容整合；自研/无CI边界、回归及.5发布待验 |
+| R1.4 | in_progress | 官方becb95d40并发未知显示已整合；admin双轮race/UI81/类型lint通过，单PR/.5发布待验 |
 
 ## 工作区与验证约定
 
-- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前production；origin自有ransub2api，官方upstream禁推。
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前integration/upstream-stable；origin自有ransub2api，官方upstream禁推。
 - 正式测试/lint/vet及失败证据见DECISIONS；unit/integration并发1–2，Redis竞争用5.0.14.1，失败不改报通过。
 - 协议/区域/CLI及图片夹具的覆盖、复现和清理见DECISIONS；本地夹具不等于供应商验收。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。

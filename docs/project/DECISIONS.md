@@ -2860,3 +2860,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 匹配最终工具SHA的函数路径通过后，再用实际release_matrix.py local-rehearse CLI重复验证，最终entrypoint_exit=0/passed=true。.3源55a8388f3、程序31db69bd708b；.4源5e220a84a、程序9573785eed2a；两真实进程共享隔离SQL/Redis。两账号各并发2、不同分组售价0.12/0.15（纯夹具示例），同一实际Key总额1。两方向满额各返回明确upstream_key_admission_unavailable/503且零物理发送；释放后另一节点恢复。6个完整终态、2个下游取消但继续排空的真实上游调用均usage1/claim1/quote1，账号/分组/售价/canonical费用/付款人保持。取消时上游仍活跃则Key继续持有，另节点拒绝；实际终态后精确归还，不重放。4个拒绝均usage/claim/quote0，峰值物理并发1。
 - 两轮成功的串行升级/回退/重升和管理并发仍通过，原迁移checksum/凭据/售价/暂停监测保持。新鲜副本495迁移不冒称生产499迁移恢复；production_changed=false。每轮10个容器/网络全回收，候选程序及baseline解包文件退出后移除。保留mixed_version_isolation_verified=false，只关闭D8.3明确HTTP范围，不关闭WS/区域/后台任务/其他非文本/缓存与供应商/旧长会话父验收。证据沿mixed-requests-{unit,linux-unit,remote}，最初失败、取消假设失败和函数路径证据分别保留，不用旧JSON的passed替代失败CLI退出码。
 - 新发现官方production在稳定tag v2.25.4之后合入becb95d40并发未知显示修复，符合原unknown规则；接续R1.4整合与同源维护发布，不将未回归的生产分支tip当已上线版本。原28项20done/8部分保持。
+
+
+### 2026-11-27 R1.4候选：并发未知不伪装空闲
+
+- 固定官方becb95d40（issue1075）正常合并，机械冲突0。自研Account列表/DTO/权限、调度评分、共享Key与API保留；current_concurrency从int变可空指针，原账号实时槽位快照失败/缺项/非法读数返回null，不改已有真实0。列表排序/汇总本就对不可用返回503，普通列表/详情改显示未知；ETag随null变化，前端仅省略字段才保留旧值，显式null不再复用旧值。
+- 新官方workflow原PR触发改workflow_dispatch，checkout/预期SHA/组名补手动事件fallback；未执行任何测试CI或远端截图workflow。VERSION候选2.25.4-ransub.5；原上线.4不改。无需数据库迁移，既有499迁移保留。
+- 81项前端测试通过38.19s，含未知/缺字段/非法/零/占用及自动刷新；vue-tsc -b和定向eslint退出0。增量Go1.27.4 lint0 issues、admin vet0。完整admin race首次-count=2在第二轮暴露旧TestAdminUsagePlatformFilter的进程级统计缓存命中，仓储捕获器未调用而group_id保持0；原完整及最小双轮RED1.701s均保留。该测试目标为筛选条件传播，原位显式使用已存在nocache=true，未改业务缓存/过滤行为或期望。修后完整admin race双轮12.556s退出0，无跳过掩盖。
+- 扩展发行工具Linux全套103项2.351s通过，原包装器输出经GBK打印替换字符失败但测试日志已保存，复用其真实Ran103/OK证据，不把包装打印当测试失败或重复再跑。Windows/Linux演练31项及静态0保留。D8.3达成不代表完整混版，R1.4尚待固定源码/副本升级回退/发行/线上真实组件和业务流验收。
