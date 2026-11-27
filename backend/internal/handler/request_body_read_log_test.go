@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -42,11 +43,26 @@ func TestLogRequestBodyReadFailureClassifiesWithoutPayload(t *testing.T) {
 	require.NotContains(t, entries[0].Message+fmt.Sprint(fields), "secret-payload-marker")
 }
 
-func TestRequestBodyReadErrorKind(t *testing.T) {
-	require.Equal(t, "unsupported_content_encoding", requestBodyReadErrorKind(errors.New(`decode Content-Encoding "br": unsupported Content-Encoding`)))
-	require.Equal(t, "truncated_body", requestBodyReadErrorKind(io.ErrUnexpectedEOF))
-	require.Equal(t, "max_bytes", requestBodyReadErrorKind(&http.MaxBytesError{Limit: 10}))
-	require.Equal(t, "other", requestContentEncodingCategory("private-payload-marker"))
+func TestLogRequestBodyReadFailureUsesSharedTimeoutProgress(t *testing.T) {
+	log, logs := newObservedLogger(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.ContentLength = 1024
+	err := &pkghttputil.RequestBodyReadError{Err: &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}, BytesRead: 7, Elapsed: 37 * time.Millisecond}
+	logRequestBodyReadFailure(log, req, err)
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	fields := entries[0].ContextMap()
+	require.Equal(t, "read_timeout", fields["error_kind"])
+	require.EqualValues(t, 7, fields["bytes_read"])
+	require.EqualValues(t, 37, fields["read_ms"])
+	require.EqualValues(t, 408, fields["status"])
+}
+
+func TestRequestBodyReadClassificationUsesSharedPolicy(t *testing.T) {
+	require.Equal(t, "unsupported_content_encoding", pkghttputil.DescribeRequestBodyReadFailure(nil, errors.New(`decode Content-Encoding "br": unsupported Content-Encoding`)).Kind)
+	require.Equal(t, "truncated_body", pkghttputil.DescribeRequestBodyReadFailure(nil, io.ErrUnexpectedEOF).Kind)
+	require.Equal(t, "max_bytes", pkghttputil.DescribeRequestBodyReadFailure(nil, &http.MaxBytesError{Limit: 10}).Kind)
+	require.Equal(t, "other", pkghttputil.RequestContentEncodingCategory("private-payload-marker"))
 }
 
 func TestRequestBodyReadFailureKeepsBodyLimitMessageWithoutLogging(t *testing.T) {

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -12,6 +13,8 @@ import (
 )
 
 const requestIDHeader = "X-Request-ID"
+
+var incomingCloudflareRay = regexp.MustCompile(`^[0-9a-fA-F]{16}(?:-[A-Z]{3})?$`)
 
 func requestLogPath(path string) string {
 	if strings.HasPrefix(path, "/api/bps-images/") {
@@ -38,13 +41,24 @@ func RequestLogger() gin.HandlerFunc {
 		clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string)
 		clientRequestID, _ = normalizeCorrelationID(clientRequestID)
 
-		requestLogger := logger.With(
+		fields := []zap.Field{
 			zap.String("component", "http"),
 			zap.String("request_id", requestID),
 			zap.String("client_request_id", strings.TrimSpace(clientRequestID)),
 			zap.String("path", requestLogPath(c.Request.URL.Path)),
 			zap.String("method", c.Request.Method),
-		)
+		}
+		// Incoming identifiers are untrusted correlation hints, never the
+		// internal client/usage identity or evidence of a trusted proxy.
+		if incoming := strings.TrimSpace(c.GetHeader(clientRequestIDHeader)); len(incoming) == 36 {
+			if id, err := uuid.Parse(incoming); err == nil {
+				fields = append(fields, zap.String("incoming_client_request_id", id.String()))
+			}
+		}
+		if ray := strings.TrimSpace(c.GetHeader("Cf-Ray")); len(ray) <= 20 && incomingCloudflareRay.MatchString(ray) {
+			fields = append(fields, zap.String("incoming_cf_ray", ray))
+		}
+		requestLogger := logger.With(fields...)
 
 		ctx = logger.IntoContext(ctx, requestLogger)
 		c.Request = c.Request.WithContext(ctx)

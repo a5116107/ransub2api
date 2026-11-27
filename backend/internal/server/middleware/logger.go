@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -79,9 +80,23 @@ func Logger() gin.HandlerFunc {
 		if model != "" {
 			fields = append(fields, zap.String("model", model))
 		}
+		failedUpload := false
+		if value, exists := c.Get(requestBodyReadFailureContextKey); exists {
+			if failure, ok := value.(pkghttputil.RequestBodyReadFailure); ok {
+				fields = append(fields, zap.String("failure_stage", "request_body"))
+				fields = append(fields, failure.LogFields()...)
+				failedUpload = true
+			}
+		}
 
 		l := logger.FromContext(c.Request.Context()).With(fields...)
-		l.Info("http request completed", zap.Time("completed_at", endTime))
+		if failedUpload {
+			// Keep one completion event and make its payload-free upload diagnosis
+			// visible in system logs even when ordinary access indexing is disabled.
+			l.Warn("http request completed", zap.Time("completed_at", endTime))
+		} else {
+			l.Info("http request completed", zap.Time("completed_at", endTime))
+		}
 
 		if len(c.Errors) > 0 {
 			l.Warn("http request contains gin errors", zap.String("errors", c.Errors.String()))

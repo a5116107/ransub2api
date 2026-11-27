@@ -177,7 +177,7 @@ func classifyRequestBodyReadError(req *http.Request, err error) string {
 }
 
 // IsRequestBodyReadTimeout reports whether a body read failed because a read
-// deadline expired (for example WithBodyReadTimeout's per-read deadline).
+// deadline expired, including a per-stream deadline set by the HTTP server.
 func IsRequestBodyReadTimeout(err error) bool {
 	var netErr net.Error
 	return errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout())

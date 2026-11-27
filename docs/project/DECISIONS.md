@@ -3015,3 +3015,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 远端清理preview/actual一致，candidate170991776B及cutover字段35784B均无活跃引用后删除，rollback_preserved=true/health=ok，数据库/发行包/.7回滚全保留；本地当前SQL测试程序208782204B已按身份原生删除。历史Windows受保护421MB等仍保留不绕行。R1.7明确范围done，原28项20done/8部分、D8/D9与unknown/缓存契约保持，首页未提交变更不夹带。证据复用r17-production-{rehearse,deploy,verify,cleanup}.log、r17-public-smoke.json及principal-funding-policy-*。
 
 - 归因更正：上段账号15的23:28为updated_at观察值，单凭它不证明管理员或具体操作来源；当前OpenAI/APIKey/group2已由数据库核验，发布迁移/本轮策略写入均未自动改组。状态容量复核曾因CRLF余量多14字节未通过，已缩短重复摘要并复核LF/CRLF均在预算内，未删除开放验收或改变任务总数。
+
+### 2026-11-28 D9.6：入口上传诊断、跨层关联与原位去重
+
+- 接续唯一H盘工作树ce2a80657，原首页3文件与components/home未提交改动保留不夹带；自有活动PR0，官方最新仍v2.25.5/91aa59645，无新上游冲突。实际生产仍.1程序76444f64，近新时间窗未出现明确520，旧入口499与TCP reset证据仍分开；不重复宣称截图恢复。选择原D9依赖就绪缺口，不因供应商unknown/缓存域契约等待停止本地工作。
+- 源码证实RequestBodyReadError已有bytes/time字段但构造点0；读取helper丢弃失败时的真实进度，取消又在RejectRequestBodyReadError提前返回，访问日志仅499无阶段；handler还复制了一套压缩/传输分类，net.OpError超时落transport，与共享分类read_timeout矛盾。新增行为回归先实际失败：缺incoming两个关联字段、取消丢阶段、handler超时错误分类；reader测试修正原夹具工厂名后独立证明两尺寸都无进度注解，不把初次编译错误当业务RED。
+- 原位在已有chunk读取与缓冲结果保留累计n，只有真正读取过的入口才包装RequestBodyReadError；底层errors.Is/As、预算退款/413/503、原始取消和部分内容不转发保持。压缩解码失败保留原始传输字节/读取时长，解压阶段不冒充线上吞吐；未开始读取的取消保持未知。同步内存reader在Windows可测0时间，测试加入受控20ms错误reader以验证真计时而不调大业务期限。
+- 原handler分类与编码函数删除，request_body_read_log.go从96降25行（-71行），实际调用同一DescribeRequestBodyReadFailure/LogFields；旧符号全仓handler引用0，过时WithBodyReadTimeout注释删除。取消仅在Gin上下文挂无正文诊断，并入原唯一http request completed WARN，系统索引不受普通访问日志开关影响；无额外供应商错误/用量/账务记录。原有其他失败响应格式/状态不变。
+- 原RequestLogger新增合法UUID的incoming_client_request_id及16hex/可选三字母机房的incoming_cf_ray，超长/非法忽略。不复制Authorization/query/body/raw error；只作非可信关联，不赋予代理信任、认证、选号或计费去重能力；原内部client ID和Usage-ID独立生成。已证明已知客户端X-Client ID不再与内部ID混淆，Cloudflare值也不当来源真实性证明。
+- Windows焦点/邻接三包通过（httputil1.039/middleware2.427/handler1.430s）；两个完整小包通过1.354/3.401s；真HTTP1.1/TLS HTTP2各取消/读期限/gzip完成共6边界，三轮race通过，追加最终形态race三包2.144/2.163/1.191s。初轮协议夹具错误是zap数字类型比较及成功响应前取消，修正断言/客户端生命周期后重跑，未削弱499/408/零选号/正文隐私断言。内存预算失败及读取取消/大小限制/原压缩回归保留。
+- 最终三包go vet退出0，双包含测试的增量七类lint初次发现两处Pipe Close未检查，改为拥有者defer显式忽略后0issues/exit0。上传生命周期测试从请求logger测试移到原模块对应request_body_memory_test.go，旧文件359行、无重复实现；新增TODO/FIXME/XXX0。证据沿ingress-upload-trace-*；已有完整回归不重跑无关repo/真实供应商负例，不执行源码CI。
+- 既有SSE文档原位修正已退役的耗时详情入口，补入口字段/已收字节/未知值/无正文/非可信关联与回滚语义；不新增第二份运维方案。D9.6定义追加在原计划，仍是原D9子验收，不用子项改变原28项20done/8部分。

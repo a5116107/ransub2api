@@ -7,6 +7,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const requestBodyReadFailureContextKey = "request_body_read_failure"
+
 // AbortWithRequestBodyReadFailure writes the shared response for a failed body
 // read in middleware that inspects the body before the handler. It applies the
 // same classification, client message, protocol-shaped error body and

@@ -8,11 +8,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -84,6 +85,9 @@ func ReadRequestBodyWithPreallocLimit(req *http.Request, maxDecodedBytes int64) 
 type requestBodyBuffer struct {
 	data    []byte
 	charged int64
+	// Bytes consumed by this reader, including partial data on error. Only the
+	// ingress caller labels these as wire bytes; decompression has its own reader.
+	readBytes int64
 }
 
 func (b *requestBodyBuffer) release(ctx context.Context) {
@@ -125,9 +129,11 @@ func readRequestBodyWithBudget(req *http.Request, limits ...int64) (result reque
 		}
 	}
 
+	readStarted := time.Now()
 	raw, err := readRequestBodyChunksWithBudget(req.Context(), req.Body, capHint, req.ContentLength)
+	readElapsed := time.Since(readStarted)
 	if err != nil {
-		return requestBodyBuffer{}, err
+		return requestBodyBuffer{}, &RequestBodyReadError{Err: err, BytesRead: raw.readBytes, Elapsed: readElapsed}
 	}
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
@@ -138,7 +144,9 @@ func readRequestBodyWithBudget(req *http.Request, limits ...int64) (result reque
 	defer raw.release(req.Context())
 	decoded, err := decompressRequestBodyWithBudget(req.Context(), enc, raw.data, maxDecodedBytes)
 	if err != nil {
-		return requestBodyBuffer{}, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
+		return requestBodyBuffer{}, &RequestBodyReadError{
+			Err: fmt.Errorf("decode Content-Encoding %q: %w", enc, err), BytesRead: raw.readBytes, Elapsed: readElapsed,
+		}
 	}
 
 	req.Header.Del("Content-Encoding")
@@ -153,10 +161,12 @@ func readRequestBodyWithBudget(req *http.Request, limits ...int64) (result reque
 // Content-Length before the corresponding bytes have arrived.
 func readRequestBodyChunksWithBudget(ctx context.Context, reader io.Reader, initialCapacity int, contentLength int64) (result requestBodyBuffer, err error) {
 	var reserved int64
+	var received int64
 	defer func() {
 		// Chunks and the EOF probe are temporary once the final buffer is
 		// assembled. On failure there is no result, so refund all allocations.
 		releaseRequestBodyMemory(ctx, reserved-result.charged)
+		result.readBytes = received
 	}()
 	capacity := initialCapacity
 	var chunks [][]byte
@@ -180,6 +190,7 @@ func readRequestBodyChunksWithBudget(ctx context.Context, reader io.Reader, init
 			var read int
 			read, err = reader.Read(chunk[n:])
 			n += read
+			received += int64(read)
 		}
 		// HTTP/1 can cancel the context as a side effect of the read deadline.
 		if IsRequestBodyReadTimeout(err) {

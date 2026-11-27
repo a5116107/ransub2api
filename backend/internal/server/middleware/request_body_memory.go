@@ -13,6 +13,7 @@ import (
 // response is marked 499, matching the gateway handler's cancellation path.
 func RejectRequestBodyReadError(c *gin.Context, err error) bool {
 	if err != nil && c != nil && c.Request != nil && c.Request.Context().Err() != nil && !pkghttputil.IsRequestBodyReadTimeout(err) {
+		c.Set(requestBodyReadFailureContextKey, pkghttputil.DescribeRequestBodyReadFailure(c.Request, err))
 		if !c.Writer.Written() {
 			c.Status(499)
 		}

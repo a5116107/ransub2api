@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +130,53 @@ func TestRequestLoggerBoundsIncomingRequestID(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if got := len(w.Header().Get(requestIDHeader)); got != 36 {
 		t.Fatalf("response request_id length=%d", got)
+	}
+}
+
+func TestRequestLoggerIncomingTraceDoesNotReplaceBillingIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, client, ray, wantClient, wantRay string }{
+		{"valid", "01a1819a-f9dd-78b3-bd12-c917a9326e9f", "a6120a6c2f24fa50-NRT", "01a1819a-f9dd-78b3-bd12-c917a9326e9f", "a6120a6c2f24fa50-NRT"},
+		{"invalid", "private-header-marker", "private-header-marker", "", ""},
+		{"oversized", strings.Repeat("a", 1024), strings.Repeat("a", 1024), "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := initMiddlewareTestLogger(t)
+			r := gin.New()
+			r.Use(RequestLogger(), ClientRequestID(), Logger())
+			r.GET("/responses", func(c *gin.Context) { c.Status(http.StatusOK) })
+			req := httptest.NewRequest(http.MethodGet, "/responses?token=private-query-marker", nil)
+			req.Header.Set("X-Client-Request-ID", tc.client)
+			req.Header.Set("Cf-Ray", tc.ray)
+			req.Header.Set("Authorization", "Bearer private-auth-marker")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			internal := w.Header().Get(clientRequestIDHeader)
+			if internal == "" || internal == tc.client || w.Header().Get("X-Sub2api-Usage-Id") != "client:"+internal {
+				t.Fatal("incoming trace changed the internal usage identity")
+			}
+			found := false
+			for _, event := range sink.list() {
+				if event.Message != "http request completed" {
+					continue
+				}
+				found = true
+				for key, want := range map[string]string{"incoming_client_request_id": tc.wantClient, "incoming_cf_ray": tc.wantRay} {
+					got, exists := event.Fields[key]
+					if want == "" && exists || want != "" && got != want {
+						t.Fatalf("%s=%v, want %q", key, got, want)
+					}
+				}
+				encoded, _ := json.Marshal(event.Fields)
+				for _, secret := range []string{"private-query-marker", "private-auth-marker", "private-header-marker"} {
+					if strings.Contains(string(encoded), secret) {
+						t.Fatal("trace leaked non-diagnostic data")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing access event")
+			}
+		})
 	}
 }
 
