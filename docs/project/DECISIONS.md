@@ -2790,3 +2790,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 首张流量截图仍在loading，发现后补普通界面的aria-busy=false/无status/无alert/真实table与节点健康加载校验，未改生产DOM或伪造结果。其ui-only首轮因原生SSH255连接超时失败；读取公网200及已保存server-access连接立即成功，将同一ops/read-only入口改走原技能验证连接，主机密钥不放宽。最终ui-only退出0，截图目视复核真实150802条流量、图表和节点健康正常；未重复计费SSE。原失败日志保留，不宣称最初loading图证明已加载。
 - 原native SSH cleanup预览同报255，未进行该次删除。技能连接下重新核对/proc及容器挂载0引用、精确SHA后清最终候选和cutover字段170955183B，再以相同清理器核原.1已退出候选170909856B；累计341865039逻辑字节，cleanup均0/rollback_preserved=true。7个隔离演练容器/网络均回收；保留所有备份/正式制品/复用缓存，未全机prune。受宿主policy保护的首候选54247114B及历史scratch不改删、不换工具绕行。
 - 证据沿H:/Root/DevCache/evidence/sub2api-quality-evidence：upstream-v2254-{production-deploy,production-verify,production-cleanup,public-smoke,public-ui-loaded}.log、public-smoke.json、public-smoke-ui.json、live-diagnostic-backup.json、诊断回退JSON及中英双宽截图。R1.2明确范围完成；原28项20done/8部分保持，供应商来源/fast/缓存域、插件计量、完整混版及真实旧长流仍属原外部验收，凭据导入仍未执行。
+
+
+### 2026-11-27 R1.3：官方稳定线后续补丁与复测证据
+
+- 核验时官方Latest仍v2.25.4，自有Latest及生产为2.25.4-ransub.2；自有production/integration均f73ab420f，PR为空。官方production新增两项修复，固定70abfd1c51e7d3b13ada8aa852bc695c09f9104a；用户明确批准首轮错答后的两次复测允许实际答题429与错答混合确认。唯一工作树真实两父合并13个上游文件，无文本冲突；保留原自研独立429/观察/计量/版本及租约栅栏，不合入在研供应池。
+- 新复测清空父轮HTTP/连续429证据，只计实际失败答题的429，不解析错误文字或判题服务限流；两次复测总数与原预算不增加。额外补父配置不变、三种合法组合及负数/超量拒绝断言。前端历史显示被测模型及独立错答/限流次数，旧事件缺rate_limited按0展示；中英服务端总耗时不再标旧口径。
+- 质量service专项退出0/0.899s；前端四文件39项/类型/eslint退出0，30个文档链接及STATE预算通过。PG首轮仅OAuthDegradationAuditAllowsOwnedQualityGroupRestore失败：重载计划丢失运行期线路指纹，却未重新领取租约；修正夹具为先断言stale_run、完成旧租约再领取新租约，原恢复/组别/标记/事件断言保留，生产栅栏未放宽。
+- Windows首轮race在Docker发现阶段早退且未给原因，不推定为生产故障。复用原TestMain的显式依赖端口，在本机隔离PG18/Redis8上以GOMEMLIMIT=2GiB/GOGC=50执行相同仓储及扩大的质量栅栏race双轮，90.107s退出0/无失败跳过；两个带精确ID/标签的依赖均finally回收。原失败日志保持。
+- 完整handler首轮达约10GiB内存，精确终止该任务进程并保留609.638s失败/终止证据；不报通过。按2GiB软内存限制/parallel2补验仍运行。系统golangci-lint由Go1.26构建而拒绝Go1.27.4，复用已有v2.15.0兼容工具及原规则增量检查；静态最终结果、生产副本/发行/部署仍待，不提前关R1.3。

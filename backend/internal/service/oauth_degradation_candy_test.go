@@ -30,7 +30,11 @@ func TestOAuthDegradationCandyConfirmation(t *testing.T) {
 		{"persistent", "a", []string{"incorrect", "incorrect"}, true},
 		{"first recovered", "a", []string{"correct", "incorrect"}, false},
 		{"second recovered", "a", []string{"incorrect", "correct"}, false},
-		{"HTTP rejection", "a", []string{"429", "incorrect"}, false},
+		{"limited twice", "a", []string{"429", "429"}, true},
+		{"limited then wrong", "a", []string{"429", "incorrect"}, true},
+		{"wrong then limited", "a", []string{"incorrect", "429"}, true},
+		{"limited then recovered", "a", []string{"429", "correct"}, false},
+		{"error text only", "a", []string{"text429", "incorrect"}, false},
 		{"judge unavailable", "a", []string{"incorrect", "unknown"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,15 +42,22 @@ func TestOAuthDegradationCandyConfirmation(t *testing.T) {
 			runner := &ScheduledTestRunnerService{accountTestSvc: &AccountTestService{accountRepo: repo}}
 			plan := qualityAnswerRetryPlan()
 			plan.PelicanConfig.Prompt = CandyPrompt
+			plan.PelicanConfig.QualityHTTPStatus = 429
+			plan.PelicanConfig.Quality429Streak = 3
 			model := "failed-model"
 			calls := 0
 			runner.runPelican = func(_ context.Context, account int64, id string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
 				require.Equal(t, model, id)
 				require.Equal(t, plan.AccountID, account)
 				require.Equal(t, CandyPrompt, cfg.Prompt)
+				require.Zero(t, cfg.QualityHTTPStatus, "retests must not inherit the parent round's HTTP evidence")
+				require.Zero(t, cfg.Quality429Streak)
 				answer := tc.answers[calls]
 				calls++
 				if answer == "429" {
+					return &ScheduledTestResult{Status: "failed", PelicanConfig: &PelicanTestConfig{QualityHTTPStatus: 429}}, nil
+				}
+				if answer == "text429" {
 					return &ScheduledTestResult{Status: "failed", ErrorMessage: "API returned 429: busy"}, nil
 				}
 				return &ScheduledTestResult{Status: "success", ResponseText: answer}, nil
@@ -57,13 +68,47 @@ func TestOAuthDegradationCandyConfirmation(t *testing.T) {
 			fail := &ScheduledTestResult{Status: "failed", ErrorMessage: "answer_mismatch", QualityJudgment: &QualityJudgment{Verdict: "incorrect"}, PelicanConfig: &PelicanTestConfig{ModelID: model}, StartedAt: time.Now()}
 			runner.reviewDegradationCandyRound(t.Context(), plan, time.Now().Add(time.Minute), []*ScheduledTestResult{fail, fail})
 			require.Equal(t, len(tc.answers), calls)
+			require.Equal(t, 429, plan.PelicanConfig.QualityHTTPStatus)
+			require.Equal(t, 3, plan.PelicanConfig.Quality429Streak)
 			if tc.confirmed {
 				require.Len(t, repo.requests, 2)
-				require.Equal(t, 2, repo.requests[1].Incorrect)
+				var limited int
+				for _, answer := range tc.answers {
+					if answer == "429" {
+						limited++
+					}
+				}
+				require.Equal(t, limited, repo.requests[1].RateLimited)
+				require.Equal(t, 2-limited, repo.requests[1].Incorrect)
 				require.Equal(t, tc.revision, repo.requests[1].Revision)
 			} else {
 				require.Len(t, repo.requests, 1)
 			}
+		})
+	}
+}
+
+func TestOAuthDegradationCandyReviewConfirmed(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		wrong, limited int
+		confirmed      bool
+	}{
+		{"permission request", 0, 0, false},
+		{"one wrong", 1, 0, false},
+		{"one limited", 0, 1, false},
+		{"two wrong", 2, 0, true},
+		{"mixed", 1, 1, true},
+		{"two limited", 0, 2, true},
+		{"negative wrong", -1, 3, false},
+		{"negative limited", 3, -1, false},
+		{"too many wrong", 3, 0, false},
+		{"too many limited", 0, 3, false},
+		{"too many total", 2, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			review := OAuthDegradationCandyReview{Incorrect: tc.wrong, RateLimited: tc.limited}
+			require.Equal(t, tc.confirmed, review.Confirmed())
 		})
 	}
 }

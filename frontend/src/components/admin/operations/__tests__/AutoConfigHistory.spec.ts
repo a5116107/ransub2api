@@ -32,6 +32,25 @@ beforeEach(() => {
 })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
 describe('AutoConfigHistory', () => {
+  it.each([
+    { wrong: 2, limited: undefined, expectedLimited: 0 },
+    { wrong: 1, limited: 1, expectedLimited: 1 },
+    { wrong: 0, limited: 2, expectedLimited: 2 },
+  ])('distinguishes wrong and rate-limited candy confirmations: $wrong / $expectedLimited', async ({ wrong, limited, expectedLimited }) => {
+    const row = event(43, 'degradation_applied')
+    row.details.degradation = {
+      revision: 'confirmed', models: [], threshold_percent: 50, degradation_percent: 60,
+      quality_samples: 10, window_start: 'start', window_end: 'end', concurrency_cap: 6,
+      trigger_reason: 'probe_and_candy_retests',
+      candy_review: { model_id: 'tested-model', incorrect: wrong, rate_limited: limited },
+    }
+    vi.mocked(getAutoConfigEvents).mockResolvedValue({ items: [row], has_more: false })
+    const view = render()
+    await flushPromises()
+    expect(view.text()).toContain(`tested-model 糖果复核 · 答错 ${wrong} 次，答题限流 ${expectedLimited} 次`)
+    expect(view.text()).not.toContain('undefined')
+  })
+
   it('shows the five actual HTTP rejections as the model restriction reason', async () => {
     const row = event(42, 'oauth429_review_completed')
     row.details.oauth429 = { model: 'example', trigger_id: 'fixture', reason: 'five_consecutive_429', model_blocked: true,

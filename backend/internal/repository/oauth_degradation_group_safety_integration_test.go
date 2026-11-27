@@ -25,6 +25,9 @@ func TestOAuthDegradationAuditAllowsOwnedQualityGroupRestore(t *testing.T) {
 	var err error
 	f.plan, err = f.plans.GetByID(t.Context(), f.plan.ID)
 	require.NoError(t, err)
+	require.Equal(t, "stale_run", isolationRound(f, "passed", "passed"), "reloading a plan must not recreate its claimed route evidence")
+	require.NoError(t, f.plans.FinishPelican(t.Context(), f.plan.ID, f.until, time.Now()))
+	f.claim()
 	require.Equal(t, "restored", isolationRound(f, "passed", "passed"))
 	require.Nil(t, f.plan.QualityRestoreDiagnostic)
 	require.Equal(t, 1, f.count("SELECT COUNT(*) FROM account_groups WHERE account_id=$1 AND group_id="+qualityIsolationID(closed)))
