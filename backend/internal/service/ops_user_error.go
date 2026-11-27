@@ -112,7 +112,7 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 	}
 	message := e.Message
 	if e.Type == "transport_error" {
-		message = openAIHTTP2PeerResetMessage("")
+		message = "Upstream response transport was interrupted. Content may be incomplete. Do not automatically retry the same request."
 	}
 	return &UserErrorRequest{
 		ID:              e.ID,
@@ -153,13 +153,18 @@ func ToUserErrorRequestDetail(e *OpsErrorLogDetail) *UserErrorRequestDetail {
 		var envelope struct {
 			Error struct {
 				ResetReason string `json:"reset_reason"`
+				Code        string `json:"code"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal([]byte(e.ErrorBody), &envelope)
 		reason := safeHTTP2ResetReason(envelope.Error.ResetReason)
-		base.Message = openAIHTTP2PeerResetMessage(reason)
-		failure := &OpsTransportFailure{ResetReason: reason}
-		body, _ := json.Marshal(map[string]any{"error": failure.ErrorFields()})
+		failure := &OpsTransportFailure{ResetReason: reason, Code: envelope.Error.Code}
+		fields := failure.ErrorFields()
+		if fields["code"] != OpenAIUpstreamHTTP2StreamErrorCode {
+			reason, failure.ResetReason = "", ""
+		}
+		base.Message, _ = fields["message"].(string)
+		body, _ := json.Marshal(map[string]any{"error": fields})
 		return &UserErrorRequestDetail{UserErrorRequest: *base, ErrorBody: string(body), ResetReason: reason}
 	}
 	return &UserErrorRequestDetail{

@@ -166,12 +166,42 @@ func openAIHTTP2PeerResetMessage(reason string) string {
 // Keeping it separate from HTTP status avoids both false success and 502 policy.
 type OpsTransportFailure struct {
 	ResetReason string `json:"reset_reason,omitempty"`
+	Code        string `json:"code,omitempty"`
 }
 
 func (f *OpsTransportFailure) ErrorFields() map[string]any {
+	isHTTP2Reset := f.Code == OpenAIUpstreamHTTP2StreamErrorCode ||
+		(f.Code == "" && safeHTTP2ResetReason(f.ResetReason) != "")
+	if !isHTTP2Reset {
+		return map[string]any{"type": "upstream_error", "code": OpenAIUpstreamStreamReadErrorCode,
+			"category": "transport_error", "protocol": "HTTP",
+			"message": "Upstream response stream was interrupted. Content may be incomplete. Do not automatically retry the same request."}
+	}
 	return map[string]any{"type": "upstream_error", "code": OpenAIUpstreamHTTP2StreamErrorCode,
 		"category": "transport_error", "protocol": "HTTP/2", "reset_reason": safeHTTP2ResetReason(f.ResetReason),
 		"message": openAIHTTP2PeerResetMessage(f.ResetReason)}
+}
+
+// Record a trusted local reader failure after output, without inventing an
+// upstream HTTP status or making an already submitted turn replayable.
+func recordOpenAIStreamReadFailure(c *gin.Context, account *Account, upstreamRequestID string, passthrough bool, cause error) {
+	if c == nil || c.Request == nil || !shouldClassifyOpenAIUpstreamStreamReadError(cause, c.Request.Context()) {
+		return
+	}
+	failure := &OpsTransportFailure{Code: OpenAIUpstreamStreamReadErrorCode}
+	message := "Upstream response stream was interrupted"
+	c.Set(OpsUpstreamStatusCodeKey, 0)
+	c.Set(OpsUpstreamErrorMessageKey, message)
+	c.Set(OpsUpstreamErrorDetailKey, "")
+	event := OpsUpstreamErrorEvent{Kind: "stream_read_error", Stage: "response_stream", Message: message,
+		UpstreamRequestID: strings.TrimSpace(upstreamRequestID), Passthrough: passthrough,
+		ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account)}
+	if account != nil {
+		event.Platform, event.AccountID, event.AccountName = account.Platform, account.ID, account.Name
+	}
+	appendOpsUpstreamError(c, event)
+	MarkOpsStreamErrorValue(c, OpsStreamError{TransportFailure: failure, ErrType: "upstream_error",
+		Code: OpenAIUpstreamStreamReadErrorCode, Message: message, IntendedStatus: http.StatusBadGateway, CountTowardsSLA: true})
 }
 
 // handleOpenAIHTTP2PeerReset ends this submitted request at the read boundary.
@@ -191,7 +221,7 @@ func handleOpenAIHTTP2PeerReset(c *gin.Context, account *Account, requestID stri
 	}
 	StopOpenAICompactSSEKeepaliveCommitted(c)
 	StopOpenAIImagesJSONKeepaliveCommitted(c)
-	failure := &OpsTransportFailure{ResetReason: reason}
+	failure := &OpsTransportFailure{ResetReason: reason, Code: OpenAIUpstreamHTTP2StreamErrorCode}
 	message := openAIHTTP2PeerResetMessage(reason)
 	c.Set(OpsUpstreamStatusCodeKey, 0)
 	c.Set(OpsUpstreamErrorMessageKey, message)

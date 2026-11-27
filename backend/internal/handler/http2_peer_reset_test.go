@@ -39,6 +39,74 @@ func (u *peerResetHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) 
 	return u.client.Do(req)
 }
 
+func TestOpenAIStreamReadFailureOpsBoundary(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%t", passthrough), func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			setupOpsErrorLogTestQueue(t, 8)
+			var submissions atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				submissions.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Length", "1000000")
+				w.Header().Set("X-Request-Id", "actual-reader-failure")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n")
+				_ = http.NewResponseController(w).Flush()
+				// The real HTTP/1 body reader reports unexpected EOF, not HTTP 502.
+			}))
+			defer upstream.Close()
+			base, err := url.Parse(upstream.URL)
+			require.NoError(t, err)
+			account := service.Account{ID: 9, Name: "synthetic", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "synthetic", "base_url": "https://example.invalid/v1"},
+				Extra: map[string]any{"openai_passthrough": passthrough, "openai_apikey_responses_api_mode": "force_responses"}}
+			h := newHTTP2PeerResetHandler(t, &peerResetHTTPUpstream{client: upstream.Client(), base: base}, account)
+			repo := &ingressRejectOpsRepo{}
+			ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			router := gin.New()
+			router.Use(OpsErrorLoggerMiddleware(ops))
+			router.POST("/v1/responses", func(c *gin.Context) {
+				seed, _ := newOpenAIResponsesFailoverTestContext(t, c.Request.Context())
+				for k, v := range seed.Keys {
+					c.Set(k, v)
+				}
+				h.Responses(c)
+			})
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.1","stream":true,"input":"synthetic"}`)))
+			for len(opsErrorLogQueue) > 0 {
+				flushOpsErrorLogBatch([]opsErrorLogJob{<-opsErrorLogQueue})
+			}
+			require.Equal(t, int32(1), submissions.Load(), "committed output is never replayed")
+			require.Contains(t, rec.Body.String(), "partial answer")
+			require.NotContains(t, rec.Body.String(), "response.completed")
+			terminal := "event: error\n"
+			if passthrough {
+				terminal = "event: response.failed\n"
+			}
+			require.Equal(t, 1, strings.Count(rec.Body.String(), terminal))
+			require.Len(t, repo.entries, 1)
+			entry := repo.entries[0]
+			require.Equal(t, "transport_error", entry.ErrorType)
+			require.Equal(t, "network", entry.ErrorPhase)
+			require.Equal(t, "provider", entry.ErrorOwner)
+			require.Equal(t, "upstream_transport", entry.ErrorSource)
+			require.Equal(t, http.StatusOK, entry.StatusCode)
+			require.Nil(t, entry.UpstreamStatusCode)
+			require.NotNil(t, entry.AccountID)
+			require.Equal(t, int64(9), *entry.AccountID)
+			require.NotNil(t, entry.UpstreamErrorsJSON)
+			var events []service.OpsUpstreamErrorEvent
+			require.NoError(t, json.Unmarshal([]byte(*entry.UpstreamErrorsJSON), &events))
+			require.Len(t, events, 1)
+			require.Equal(t, "actual-reader-failure", events[0].UpstreamRequestID)
+			require.Zero(t, events[0].UpstreamStatusCode)
+			require.NotContains(t, entry.ErrorBody, "HTTP/2")
+		})
+	}
+}
+
 func TestHTTP2PeerResetBoundary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setupOpsErrorLogTestQueue(t, 8)

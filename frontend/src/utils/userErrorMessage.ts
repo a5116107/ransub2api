@@ -7,10 +7,19 @@ const resetReasons = new Set([
 ])
 
 export function userErrorMessage(
-  error: Pick<UserErrorRequest, 'category' | 'message'> & { reset_reason?: string },
+  error: Pick<UserErrorRequest, 'category' | 'message'> & { reset_reason?: string; error_body?: string },
   t: (key: string, values?: Record<string, string>) => string
 ): string {
   if (error.category !== 'transport_error') return error.message
   const reason = error.reset_reason && resetReasons.has(error.reset_reason) ? ` ${error.reset_reason}` : ''
+  let code: string | undefined
+  try {
+    code = JSON.parse(error.error_body || '{}')?.error?.code
+  } catch {
+    // Missing or malformed evidence does not identify a transport protocol.
+  }
+  if (code !== 'upstream_http2_stream_error' && !(code === undefined && reason)) {
+    return t('usage.errors.streamInterrupted')
+  }
   return t('usage.errors.peerReset', { protocol: `HTTP/2${reason}` })
 }

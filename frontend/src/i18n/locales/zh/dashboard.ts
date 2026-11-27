@@ -549,6 +549,7 @@ export default {
     tabs: { usage: '用量明细', errors: '错误请求', ranking: '用户排行' },
     errors: {
       peerReset: '上游连接被对端重置（{protocol}）。内容可能不完整，请勿自动重试同一请求。',
+      streamInterrupted: '上游响应流中断。内容可能不完整，请勿自动重试同一请求。',
       http200StreamFailure: '200 — 响应头发送后流失败',
       time: '时间', model: '模型', endpoint: '端点', status: '状态码',
       category: '分类', platform: '平台', message: '错误信息',

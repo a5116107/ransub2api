@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -101,4 +102,88 @@ func TestOpenAINonStreamingBareServerFailureBeforeOutput(t *testing.T) {
 			require.False(t, c.Writer.Written())
 		})
 	}
+}
+
+func TestOpenAIStreamReadFailureAfterOutputRetainsUpstreamAttribution(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(map[bool]string{false: "native", true: "passthrough"}[passthrough], func(t *testing.T) {
+			c, rec := newNonStreamingFailoverContext(t)
+			svc := newNonStreamingFailoverService()
+			account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			upstreamErr := errors.New("read tcp private-address: read: connection reset by peer")
+			body := &openAIStreamReadThenErrorCloser{reader: strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"), err: upstreamErr}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}, "X-Request-Id": {"upstream-read-failure"}}, Body: body}
+			var err error
+			if passthrough {
+				_, err = svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			} else {
+				_, err = svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			}
+			require.Error(t, err)
+			var failover *UpstreamFailoverError
+			require.False(t, errors.As(err, &failover), "committed output must never be replayed")
+			require.Contains(t, rec.Body.String(), "partial answer")
+			require.NotContains(t, rec.Body.String(), "response.completed")
+			if passthrough {
+				require.Equal(t, 1, strings.Count(rec.Body.String(), "event: response.failed\n"))
+				require.Contains(t, rec.Body.String(), OpenAIUpstreamStreamReadErrorCode)
+			}
+			events, ok := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, ok, "read failure must retain provider attribution rather than become a platform error")
+			upstreamEvents, ok := events.([]*OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.Len(t, upstreamEvents, 1)
+			require.Equal(t, int64(9), upstreamEvents[0].AccountID)
+			require.Equal(t, "upstream-read-failure", upstreamEvents[0].UpstreamRequestID)
+			require.Equal(t, "stream_read_error", upstreamEvents[0].Kind)
+			require.Zero(t, upstreamEvents[0].UpstreamStatusCode, "connection reset is not an upstream HTTP 502")
+			require.NotContains(t, upstreamEvents[0].Message, "private-address")
+			marked, ok := GetOpsStreamError(c)
+			require.True(t, ok)
+			require.NotNil(t, marked.TransportFailure)
+			require.Equal(t, OpenAIUpstreamStreamReadErrorCode, marked.Code)
+			require.Zero(t, marked.UpstreamStatus)
+			require.True(t, marked.CountTowardsSLA)
+		})
+	}
+}
+
+func TestOpenAIStreamReadFailureExcludesLocalCancellationAndLimits(t *testing.T) {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, ErrUpstreamResponseBodyTooLarge, nil} {
+		c, _ := newNonStreamingFailoverContext(t)
+		recordOpenAIStreamReadFailure(c, &Account{ID: 9}, "request", false, err)
+		_, marked := GetOpsStreamError(c)
+		require.False(t, marked)
+		_, exists := c.Get(OpsUpstreamErrorsKey)
+		require.False(t, exists)
+	}
+	c, _ := newNonStreamingFailoverContext(t)
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	cancel()
+	c.Request = c.Request.WithContext(ctx)
+	recordOpenAIStreamReadFailure(c, &Account{ID: 9}, "request", false, errors.New("read reset"))
+	_, marked := GetOpsStreamError(c)
+	require.False(t, marked)
+}
+
+func TestOpenAIStreamReadFailureUserDetailsDoNotInventHTTP2(t *testing.T) {
+	status := http.StatusBadGateway
+	detail := ToUserErrorRequestDetail(&OpsErrorLogDetail{OpsErrorLog: OpsErrorLog{Type: "transport_error", Phase: "network", StatusCode: http.StatusOK, Message: "private-address"}, UpstreamStatusCode: &status,
+		ErrorBody: `{"error":{"code":"upstream_stream_read_error","reset_reason":"INTERNAL_ERROR","cause":"private-address"}}`})
+	require.Nil(t, detail.UpstreamStatusCode)
+	require.Empty(t, detail.ResetReason)
+	require.NotContains(t, detail.ErrorBody, "HTTP/2")
+	require.NotContains(t, detail.ErrorBody, "INTERNAL_ERROR")
+	require.NotContains(t, detail.ErrorBody, "private-address")
+	require.Contains(t, detail.ErrorBody, OpenAIUpstreamStreamReadErrorCode)
+	require.Contains(t, detail.Message, "Do not automatically retry")
+	for _, body := range []string{"", "null", "{invalid", `{"error":{"code":"unknown"}}`} {
+		unknown := ToUserErrorRequestDetail(&OpsErrorLogDetail{OpsErrorLog: OpsErrorLog{Type: "transport_error"}, ErrorBody: body})
+		require.NotContains(t, unknown.ErrorBody, "HTTP/2")
+		require.Contains(t, unknown.ErrorBody, OpenAIUpstreamStreamReadErrorCode)
+	}
+	verified := ToUserErrorRequestDetail(&OpsErrorLogDetail{OpsErrorLog: OpsErrorLog{Type: "transport_error"},
+		ErrorBody: `{"error":{"code":"upstream_http2_stream_error"}}`})
+	require.Contains(t, verified.ErrorBody, "HTTP/2")
+	require.Contains(t, verified.ErrorBody, OpenAIUpstreamHTTP2StreamErrorCode)
 }

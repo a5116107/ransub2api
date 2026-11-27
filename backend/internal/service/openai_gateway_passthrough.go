@@ -2944,6 +2944,21 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete after disconnect: %w", err)
 		}
 		s.recordOpenAIProxyStreamDisconnect(account, err, upstreamRequestID, resp)
+		recordOpenAIStreamReadFailure(c, account, upstreamRequestID, true, err)
+		if !failureDelivered {
+			stopKeepalive()
+			code, message := classifyOpenAIUpstreamStreamReadError(err)
+			source, _ := json.Marshal(gin.H{"error": gin.H{"type": "upstream_error", "code": code, "message": message}})
+			// Close any incomplete SSE frame before the single explicit terminal.
+			if _, writeErr := fmt.Fprint(w, "\n\n"+buildOpenAIResponseFailedSSE(responseID, originalModel, createdAtTracker.Value(), source, message)); writeErr == nil {
+				if flushErr := FlushGatewayResponse(w); flushErr != nil {
+					clientDisconnected = true
+				}
+			} else {
+				clientDisconnected = true
+			}
+			MarkResponseCommitted(c)
+		}
 		logger.LegacyPrintf("service.openai_gateway",
 			"[OpenAI passthrough] 流读取异常中断: account=%d request_id=%s err=%v",
 			account.ID,

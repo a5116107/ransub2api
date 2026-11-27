@@ -2896,3 +2896,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 原生WS专项对两个节点方向各验WS/WS、WS/HTTP、HTTP/WS三组合，共6容量拒绝；上游实际生成数不增加、物理峰值1。已接收WS升级的容量拒绝以1013关闭，无内容/成功终态；HTTP明确503及upstream_key_admission_unavailable。18成功轮逐轮核usage/claim/quote各一、账号/分组/固定售价/canonical费用和扣款用户一致；16轮确走上游原生WS、6次同连接previous_response_id续接，非HTTP桥替代。总记账增量恰18，六拒绝无额外记账。
 - 原拥有者清理10个容器/网络资源全部removed=true，解包基线、工具/小配置副本和/tmp/ransub-ws-rehearsal已回收；独立复查对应label容器/网络均空、scratch_exists=false，生产/proc/1/exe仍.5、原应用/PG/Redis保持。保留最小mixed-websocket-{remote.json,remote.log,tools-linux.log}证据、原制品和复用缓存，不清历史受保护scratch。
 - D8.4明确范围done；mixed_version_isolation_verified仍false，WS主动取消、区域/后台任务/其他能力/供应商缓存存活仍属原D8/D9。原28项20done/8部分不借子项改总数。按用户纠正直接取线上6小时最近60条错误及持久日志；17:40/16:56账号14为上游SIWC stream_failed（本地SIWC/BPS均false），16:51账号9四请求同TCP连接被重置，一条切14成功，三条输出后结束且Ops误归platform/internal，接续D9.3修复归因，不扩张输出后重放。
+
+### 2026-11-27 D9.3：生产读流归因、透传明确终态与中性展示
+
+- 按用户要求直接从hk2生产PostgreSQL获取最近8小时60条错误，并重新读取持久应用日志；未要求用户提供请求记录，未读取对话正文或导出凭据。16:51:10的账号9三条已输出请求均有真实reader的connection reset by peer，Ops误记platform/internal/502；同批另一条在输出前进入failover。账号14的16:56/17:40是上游SIWC失败，与本机TCP读流归因分开。当前9/14均在group2、active且schedulable；不据此推断所有历史时点都有合格可切线路。
+- 原位在两个读取失败分支记录脱敏transport_error、实际账号与上游请求ID；不伪造上游HTTP502。用户安全DTO与前端只在结构化HTTP2证据存在时显示HTTP2，否则显示中英“上游响应流中断”。旧列表不携协议证据时中性展示，未知/非法JSON不推断HTTP2；真实HTTP2的reset reason仍保留，原取消/期限/大小限制及前输出切换边界不变。
+- 新真实HTTP reader回归进一步证实：透传输出后unexpected EOF只有半截内容，缺少失败终态。已在原分支补唯一标准response.failed，停止心跳并闭合残帧；保留原内容、实际HTTP200及输出后不重放/不重复生成和结算。此次比最初“只改诊断”增加必要终态修复，依据真实失败断言，不扩张为已输出后自动续写。
+- 原调用点overlay RED：service原生/透传归因断言及真实handler持久归因断言失败。前端原实现7失败/3通过，修后55项通过25.28s，vue-tsc -b与定向eslint退出0。初轮新增测试还发现原始字符串JSON误转义和队列已将events序列化的夹具假设，原位修正为真实UpstreamErrorsJSON断言；另保留透传缺终态的行为RED。最终Go同一服务/handler专项通过1.701/5.266s，无跳过或弱化原HTTP2断言。
+- 证据沿既有sub2api-quality-evidence/production-recent-failures{,-latest,-correlated}.json及stream-read-attribution-*。官方又合入204fe3a93（issue1077）：仅明确账号握手拒绝且物理零发送/自包含请求可换号，流内额度保留唯一失败与用量；准备与D9.3同一PR交付.6。预览唯一冲突为regionalMeterAttempt字段，保留自研videoRejected/videoBound并加入canceledBeforeStart，不丢弃任一边界；尚未合并/发行/切换，生产仍.5，原28项20done/8部分不变。
