@@ -2988,3 +2988,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 先只读docker image/container与本机回滚程序盘点，再固定仅9个无运行/停止容器引用的旧Sub2API镜像，保留当前.7/fe034061与.6回滚/12127b77。逐个删除前再次核对不可变ID/全部标签/所有容器引用，不force、不prune、不动其他项目镜像/volume/数据库/配置/历史备份；线上sub2api.backup的.6 SHA dfccbb39核对前后一致，所有6个容器ID与镜像身份相同，未重启。
 - 9个镜像实际删除、docker images19→10，总显示12.08GB→3.439GB；statvfs可用空间698126336→9336262656B，观察净增8638136320B（8.04GiB），可用8.70GiB。共享层逻辑大小未逐项相加冒充净回收；健康HTTP200、rollback_preserved=true。证据在既有quality-evidence/release-retention-{inventory,cleanup}.json及cleanup.log，M14明确范围done，原28项20done/8部分保持。
 - 官方随后发布v2.25.5/91aa59645，较已集成be1d8306新增明确上下文超限/SLA排除与401默认false列，不删历史；R1.7按已有同步发布授权继续，同一PR保留自研边界。只读merge-tree预览3冲突（退役workflow、VERSION、使用量测试字段）待处理。用户新idle SSE截图接续直接生产日志关联，不先假设客户端/上游或混同此前400；根盘解除不等于该截图故障已修复。
+
+### 2026-11-27 R1.7与22点CLI流式排查：来源、证据与边界
+
+- 用户补充截图约22点，继续直接读取hk2持久日志/轮转日志和PostgreSQL元数据，覆盖21:00–22:35，日志请求起点扩展到20:00并包含裸/v1 Responses及compact别名；不读对话正文、凭据或外传原始日志。1104条请求元数据归并3621行；696条GPT用量最大333171ms、首字最大157799ms，已结束用量中15分钟以上0。两条21:37只有起点无结束/用量，后接21:38部署重建，保留缺失不将其计作成功；此统计不证明全部请求或截图没有长空闲。
+- ffc3d5b5（client643092f5）22:06:01–22:07:15.266：账号14响应头超时，22:07:03.654切9，HTTP200/usage143975，最终尝试11.462秒、351输出token。3d978e9d（clientec14ab4d）22:07:33–22:09:34.207：账号9超时，22:08:41.036切14，HTTP200/usage143994，最终尝试53.007秒、2398输出token。Ops15481/15482均Recovered记录，不能把之前尝试504等同最终业务504；仍不证明客户端接收终态或与截图唯一对应。后台DB实际头超时enabled/60秒覆盖环境20秒，5分钟3次/暂停1分钟已启用；未调整配置。
+- 新同类故障70911def/client8e25770e，22:33:21.250：账号14真实TCP connection reset by peer，约9704ms，Ops15484结构化stream_read_error/response_stream、transport归因、非Recovered；没有HTTP2证据。相邻ed7ce436与7f60ccbe在输出前切换，分别保留Recovered15483/15485；不以这些成功掩盖实际断流。Screenshot16m12s可能为整轮计时，未确定单HTTP空闲16分钟的来源，不做盲目延长超时或输出后跨账号重放。
+- 当前四处流式/handler源码与生产9649a255c diff0。实际执行go test -tags=unit ./internal/service ./internal/handler -run流读取归因/首输出/keepalive/切换/取消/终态专项 -count=1 -parallel=2 -timeout=4m，service12.388s、handler1.537s PASS。该回归证明已定义的边界，非截图全链恢复。脱敏证据复用production-cli-idle-2200-correlated.json、2233-transport.jsonl和stream-regression.log。
+- v2.25.5/91aa59645三处合并冲突已原位解决，退役workflow保持删除、VERSION自有.1、自研usage/session/计费字段全保留；批量参数容量改为实际字段数量，修正SLA文档迁移描述与测试类型断言。已存r17专项service39.677/handler7.587/repository1.389s、race两包1.244/1.239s、vet0、lint0issues、用量shape1.513s证据复用，不重复源码CI。
+- 同源Linux repository测试程序SHA11dbf55a在服务器内部隔离PG18/Redis8执行真实SQL：SLA排除保留token、单行/批量/best-effort/legacy/缓存及持久重放、HTTP2归因通过，exit0/skip0；不访问生产DSN、不发布端口或请求供应商。容器2/网络1与远端上传scratch均原拥有者清理，production_changed=false；原生产备份106268647B/SHA4c017868保留。尚需完整程序的生产副本升级/回退与同源发行，不把SQL通过标作已上线。
