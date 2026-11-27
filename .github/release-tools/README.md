@@ -152,21 +152,25 @@ account, group, fixed selling rate and debit owner. The fixture codec uses only
 Python's standard library, validates the handshake and frame bounds, negotiates
 no compression, and contacts no external WebSocket service.
 
-Four additional cancellation cases cover both node directions with a normal
-close or abrupt socket disconnect. Each must stop physical upstream generation,
+Eight additional cancellation cases cover both node directions with a normal
+close or abrupt socket disconnect, with and without upstream-reported usage.
+Each must stop physical upstream generation,
 release the shared slot, and let the peer recover without replay or a successful
 terminal on the cancelled client. Only the current turn's observed partial usage
 (fixture input 3 / output 2) may settle once; earlier turns and invented final
-usage must not be billed. Failure evidence retains the physical-release boundary
+usage must not be billed. When usage was not reported, the cancelled turn must
+have no usage, billing-claim or quote row even after the peer settles. Its token
+counts stay unknown, not measured zero; this does not prove the supplier incurred
+no cost. Failure evidence retains the physical-release boundary
 separately from settlement. The fixed `.5`/`.6` pair fails this check because its
 ordinary, non-smart passthrough omits unfinished-turn usage; do not relax the
 assertion or use that pair for a mixed-traffic rollout.
 
 `websocket_overlap.status=compatible` covers only
 `native_responses_websocket_capacity_continuation_and_settlement` for the exact
-binary pair. `mixed_version_isolation_verified` stays **false**: WebSocket
-unknown-usage cancellation, regional ownership, background jobs, other non-text
-capabilities and supplier cache lifetime remain separate observations.
+binary pair. `mixed_version_isolation_verified` stays **false**: regional
+ownership, background jobs, other non-text capabilities and supplier cache
+lifetime remain separate observations.
 The normal drained upgrade,
 rollback, re-upgrade and captured-ID cleanup still run. This check does not
 authorize mixed-version production traffic or change the production rollout.

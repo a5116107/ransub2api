@@ -520,7 +520,7 @@ class Rehearsal:
         return self.verify_request_settlement(response['client_request_id'], account, group, multiplier)
 
     def verify_request_settlement(self, request_id, account, group, multiplier, *, websocket=False,
-                                  input_tokens=16, output_tokens=4):
+                                  input_tokens=16, output_tokens=4, usage_reported=True):
         require(re.fullmatch(r'[A-Za-z0-9_-]{1,255}', request_id), 'invalid mixed-stream request identity')
         billing_id = request_id if websocket else 'client:' + request_id
         query = f"""SELECT jsonb_build_object('usage',count(*),'account',min(u.account_id),'group',min(u.group_id),
@@ -534,6 +534,10 @@ class Rehearsal:
         deadline = time.monotonic() + 15
         while True:
             observed = json.loads(self.sql(query))
+            if not usage_reported:
+                require(observed['usage'] == observed['claims'] == observed['quotes'] == 0,
+                        'unreported upstream usage created a usage/claim/quote')
+                return observed
             if observed['usage']:
                 break
             require(time.monotonic() < deadline, 'mixed stream usage was not persisted')
@@ -613,13 +617,14 @@ class Rehearsal:
             proof['cancellations'] = []
             cancellation_rows = json.loads(self.sql(row_counts))
             for index, (first, second) in enumerate(((peer, self.app), (self.app, peer))):
-                for close_mode in ('normal', 'abort'):
+                for close_mode, usage_reported in (('normal', True), ('abort', True),
+                                                   ('normal', False), ('abort', False)):
                     before = self.wait_request_state(active=0, slots=0)['calls']
-                    case = f'mixed-ws-cancel-{index}-{close_mode}'
+                    case = f'mixed-ws-cancel-{index}-{close_mode}-{int(usage_reported)}'
                     attempt = {'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
-                               'close_mode': close_mode, 'status': 'running'}
+                               'close_mode': close_mode, 'usage_reported': usage_reported, 'status': 'running'}
                     proof['cancellations'].append(attempt)
-                    self.fixture_api('/arm', {'partial_usage': True})
+                    self.fixture_api('/arm', {'partial_usage': usage_reported})
                     try:
                         cancelled = self.stream_request(first, keys[index], case, websocket=True,
                                                         cancel=True if close_mode == 'normal' else 'abort')
@@ -633,8 +638,6 @@ class Rehearsal:
                                        slots_released=True, replayed=False)
                     finally:
                         self.fixture_api('/release', {})
-                    partial = self.verify_request_settlement(cancelled['active_response_id'], accounts[index],
-                            groups[index], rates[index], websocket=True, input_tokens=3, output_tokens=2)
                     recovered = self.stream_request(second, keys[1-index], case+'-recovery', websocket=True)
                     require(recovered['status'] == 101 and recovered['completed'] == 1 and recovered['deltas'] > 0
                             and not recovered['errors'] and not recovered['close_code'],
@@ -643,13 +646,20 @@ class Rehearsal:
                                                    groups[1-index], rates[1-index], websocket=True)
                     state = self.wait_request_state(active=0, slots=0, calls=before + 2)
                     require(state['peak'] == 1, 'native WS cancellation/recovery exceeded physical capacity')
-                    attempt.update(status='compatible', partial_settlement=partial, recovery_unique_settlement=True)
+                    # Check missing-usage cancellation only after the peer has
+                    # settled, not while the first node may still be draining.
+                    settlement = self.verify_request_settlement(cancelled['active_response_id'], accounts[index],
+                            groups[index], rates[index], websocket=True, input_tokens=3, output_tokens=2,
+                            usage_reported=usage_reported)
+                    attempt.update(status='compatible', recovery_unique_settlement=True)
+                    attempt['partial_settlement' if usage_reported else 'unreported_usage_settlement'] = settlement
             after_rows = json.loads(self.sql(row_counts))
-            require(all(after_rows[k] - cancellation_rows[k] == 8 for k in cancellation_rows),
-                    'native WS cancellation/recovery duplicated or lost a partial usage/claim/quote')
-            require(state['ws_calls'] == 24 and state['ws_cancelled'] == 4,
+            require(all(after_rows[k] - cancellation_rows[k] == 12 for k in cancellation_rows),
+                    'native WS cancellation/recovery duplicated, invented or lost a usage/claim/quote')
+            require(state['ws_calls'] == 32 and state['ws_cancelled'] == 8,
                     'native WS cancellation fell back to HTTP or failed to terminate')
-            proof.update(cancelled_turns=4, cancellation_recovery_turns=4, partial_usage_unique=True)
+            proof.update(cancelled_turns=8, cancellation_recovery_turns=8, partial_usage_cancelled_turns=4,
+                         unreported_usage_cancelled_turns=4, partial_usage_unique=True, unreported_usage_not_invented=True)
         except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
             proof['status'] = 'failed'
             for attempt in proof.get('cancellations', []):

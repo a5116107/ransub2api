@@ -391,12 +391,13 @@ class ReleaseRehearsalTest(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         connect = socket.create_connection
+        cancelled_count = 0
         try:
-            for cancel in (True, 'abort'):
-                with self.subTest(cancel=cancel):
+            for cancel, usage_reported in ((True, True), ('abort', True), (True, False), ('abort', False)):
+                with self.subTest(cancel=cancel, usage_reported=usage_reported):
                     with namespace['lock']:
                         namespace['state']['hold_next']=True
-                        namespace['state']['partial_usage_next']=True
+                        namespace['state']['partial_usage_next']=usage_reported
                         namespace['gate'].clear()
                     stdout = io.StringIO()
                     payload = {'key':'private-fixture-key','case':'cancel-fixture','websocket':True,'cancel':cancel}
@@ -416,7 +417,8 @@ class ReleaseRehearsalTest(unittest.TestCase):
                     while namespace['state']['active']:
                         self.assertLess(time.monotonic(), deadline, 'physical upstream stayed active after cancellation')
                         time.sleep(.01)
-                    self.assertEqual(namespace['state']['ws_cancelled'], 1 if cancel is True else 2)
+                    cancelled_count += 1
+                    self.assertEqual(namespace['state']['ws_cancelled'], cancelled_count)
         finally:
             namespace['gate'].set()
             server.shutdown()
@@ -482,6 +484,27 @@ class ReleaseRehearsalTest(unittest.TestCase):
                                                            input_tokens=3, output_tokens=2), observed)
             with self.assertRaisesRegex(RuntimeError, 'actual current upstream turn'):
                 run.verify_request_settlement('resp_partial', 3, 4, .12, websocket=True)
+
+    def test_unknown_websocket_usage_does_not_invent_settlement(self):
+        run = rehearsal.Rehearsal(self.args)
+        observed = {'usage':0,'claims':0,'quotes':0,'account':None,'group':None,'rate':None,
+                    'input_tokens':None,'output_tokens':None,'canonical_matches':None,'debit_matches':None}
+        with patch.object(run, 'sql', return_value=json.dumps(observed)) as sql:
+            self.assertEqual(run.verify_request_settlement('resp_unknown', 3, 4, .12, websocket=True,
+                                                           usage_reported=False), observed)
+        self.assertIn("request_id='resp_unknown'", sql.call_args.args[0])
+        self.assertNotIn('client:resp_unknown', sql.call_args.args[0])
+
+    def test_unknown_websocket_usage_rejects_any_fabricated_billing_row(self):
+        run = rehearsal.Rehearsal(self.args)
+        for field in ('usage', 'claims', 'quotes'):
+            with self.subTest(field=field):
+                observed = {'usage':0,'claims':0,'quotes':0}
+                observed[field] = 1
+                with patch.object(run, 'sql', return_value=json.dumps(observed)):
+                    with self.assertRaisesRegex(RuntimeError, 'unreported.*usage/claim/quote'):
+                        run.verify_request_settlement('resp_unknown', 3, 4, .12, websocket=True,
+                                                      usage_reported=False)
 
     def test_stream_client_observes_terminal_and_cancellation_without_echoing_credentials(self):
         from unittest.mock import MagicMock

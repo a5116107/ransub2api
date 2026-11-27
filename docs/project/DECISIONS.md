@@ -3041,3 +3041,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 双方向×normal/abort共4次WS取消均上游物理终止/槽归零/无重放/客户端无成功终态，peer4恢复；每轮只结算已观察input3/output2一次，usage/claim/quote各1、账号/组/示例固定售价及钱包归属匹配。新建合成数据库496迁移前后相同、旧checksum/fixture/回退读写/重升幂等通过；该496不是生产副本的500，分别保留真实口径。10个捕获ID资源全部移除，remote driver/work根回收。
 - 该证据补齐当前正式发行对的已测边界，不覆盖原.5/.6二进制漏账，也不把mixed_version_isolation_verified=false改真；D8.5旧版与D8区域/后台/未知usage/全能力父项仍待，不授权滚动生产。生产仍统一.2串行部署。新部署后持久日志有界只读投影60个业务HTTP200、该观察范围失败元数据0；r18-post-deploy-log-observation.json保留具体起点和范围，不作全历史/所有客户端恢复声明。
 - 释放前preview/actual均核对路径、SHA、全部容器与/proc活动引用为0；实际移除candidate-86a1db655734.sub2api及cutover临时字段171036952逻辑字节，rollback_preserved=true/health=ok。原.1回滚程序/镜像、数据库备份、发行归档与最小证据保留，未把逻辑字节宣称为整盘净释放。当前Linux测试、生产副本与双版CLI各自scratch已回收；此前被宿主拒删的d93/421MB等不重试、不移动绕行。唯一工作树原首页3文件及components/home仍未提交，属于接续前已有改动，不夹带/删除，也不声称整个工作区clean。
+
+### 2026-11-28 D8.5：未回传usage取消的双版真实CLI补验
+
+- 当前.1/.2部分usage四取消成功后继续执行依赖就绪的未知usage边界，不将它误列为供应商外部等待。原verify_request_settlement仅接受已观察用量，新增正负两类回归先RED为缺usage_reported参数（2测试/4错误，验证工具缺口而非业务故障）；原位扩展同一断言函数，未报告usage时须usage/claim/quote全0，任一伪造行即失败。已有socket测试同时覆盖两关闭方式×有无usage，不新增并行实现或宽松skip。
+- 原overlap-requests从4取消原位扩为8，未知场景在peer真实恢复且唯一结算后再查原轮ID，并最终核对总量只增4个已报告部分轮+8个恢复轮，共12份usage/claim/quote，防止过早空查放行。原完整18轮/6续接/6拒绝、物理峰值1与无重放边界保持。README与唯一设计同步未知≠0；未在本地计费不代表供应商未发生成本。
+- Windows实际unittest43/2.481s、WSL矩阵43/1.178s均OK/无skip，ruff E9/F63/F7/F82“ All checks passed!”、git diff --check通过。WSL复用原解释器/依赖，仅复制小工具到原生/tmp，finally确认OWNED_WSL_SCRATCH_REMOVED True；未重跑已验证应用构建或执行CI。
+- 新真实CLI再使用同一.1/.2不可变归档及生产已核验.2文件的只读挂载，不重建已回收候选程序。验证工具SHA4d96133ce161b7c413ea4dc8de824375a8cbc264d18c7382511f3fbd689e17d7；r18-unreported-usage-overlap.log实际exit0/passed=true。双方向×normal/abort×有无usage共8取消、8peer恢复；4已报告轮仅input3/output2各唯一结算，4未报告轮input/output/account/group/rate均null、usage/claim/quote均0；槽释放/无成功终态/不重放全部成立。管理/HTTP及四阶段回退重升仍通过，10个ID资源和owned remote根全部回收，生产写入0。
+- 源码差异仅发行验收工具/测试与对应文档，不修改应用、schema或生产配置，也不为其制造.3新发行。原.5/.6仍不兼容、D8区域/后台/全能力与D9历史520验收保持，原28项20done/8部分不改。此次只读取证曾因默认GBK、单行括号及JSON多行包装解析报错，均在实际投影前失败，显式UTF-8/逐行JSON修正后取证成功，不计为业务失败或改变原断言。
