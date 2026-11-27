@@ -2868,3 +2868,21 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新官方workflow原PR触发改workflow_dispatch，checkout/预期SHA/组名补手动事件fallback；未执行任何测试CI或远端截图workflow。VERSION候选2.25.4-ransub.5；原上线.4不改。无需数据库迁移，既有499迁移保留。
 - 81项前端测试通过38.19s，含未知/缺字段/非法/零/占用及自动刷新；vue-tsc -b和定向eslint退出0。增量Go1.27.4 lint0 issues、admin vet0。完整admin race首次-count=2在第二轮暴露旧TestAdminUsagePlatformFilter的进程级统计缓存命中，仓储捕获器未调用而group_id保持0；原完整及最小双轮RED1.701s均保留。该测试目标为筛选条件传播，原位显式使用已存在nocache=true，未改业务缓存/过滤行为或期望。修后完整admin race双轮12.556s退出0，无跳过掩盖。
 - 扩展发行工具Linux全套103项2.351s通过，原包装器输出经GBK打印替换字符失败但测试日志已保存，复用其真实Ran103/OK证据，不把包装打印当测试失败或重复再跑。Windows/Linux演练31项及静态0保留。D8.3达成不代表完整混版，R1.4尚待固定源码/副本升级回退/发行/线上真实组件和业务流验收。
+
+### 2026-11-27 R1.4交付补记：.5同源、生产回退与界面验收
+
+- 恢复本轮原证据而非重发程序：PR11在08:09:32Z已合并，固定应用源8a3bf4eec0291ec6230ac8a127856383a059e12b；正式Latest v2.25.4-ransub.5于08:09:52Z发布。程序SHA256 febf2c734e2607f07862e73570b3f6c2bba3d23884c7992eb59919dfcee2bd66，GHCR镜像fc7c6cb9007a868363020d200daca132771551aecef58aee07ceb6416db127a4；不改写已公开资产。
+- 原production-rehearse为passed=true/production_changed=false：.4基线→.5候选→.4回退→再次.5四阶段加载哈希匹配、499迁移及历史保持，七个容器/网络按归属全部回收。production-deploy/verify均通过：在线更新校验、排空、后台SIGTERM重启和同镜像重建最终加载同一.5；APP4752725f09eb、原PGf30095818cb1/Redis5b796d6478e0保留，16账号/2组/1用户/1Key/499迁移保持。切换备份database.cutover-f94a7122768c.dump/SHA b156d290c92d507780b2625714e6ea57cef113f7e662ca87bba38d3ed1db7a6b及.4回滚程序/镜像保持。
+- 原public-smoke通过中英1440/390总览/过滤/账号下钻/原历史功能与工具预算入口；未知并发、真实0、占用1和恢复检查分别有后端/前端证据。唯一真实业务SSE141271/上游14完整终态一次，usage/claim/quote各一、旧event零、费用匹配。源站实际程序而非不存在的服务器Git checkout为运行权威。run45963573671已核success：仅publish-prebuilt-image成功，其余七源码作业skipped，未运行编译测试CI。
+- 原cleanup已验证候选/字段文件无引用，回收170963375逻辑字节、rollback_preserved=true/health=ok；不把逻辑量当实时磁盘释放量。本地原两个小脚本删除被策略拦截保留，旧受保护scratch不跨工具重试。证据沿既有sub2api-quality-evidence/upstream-concurrency-*，本轮只补提交缺失的验收记录。R1.4明确范围done，原28项20done/8部分及开发线保留。
+
+### 2026-11-27 D9.2：截图503归因与真实连接测试终态
+
+- request369f63c1-4686-4883-b4be-57f25d6c429a在15:09:10.501+08:00记录openai.account_select_failed，原因为gpt-6.1-sol的pool=0；专用数据库诊断同请求configured_accounts=0。15:08:35–15:09:11共21条/responses路由503，account_id与upstream_status均空，无实际上游响应证据；不归咎于供应商普遍故障，也不把旧快照/模型不支持猜作原因。
+- 操作审计与实际路径对上：账号9/14在15:09:09/11先recover-state，再15:09:12.574/13.660显式schedulable=true；此前恢复运行时状态并不授权重开持久调度开关。15:10:21起同段存在成功请求，当前group2仅9/14为active且schedulable=true，其余即使active仍停调。12:00–15:09:15无这两账号定时器执行证据；本次证据不确定更早关闭开关的具体来源，未改其归因或全量启用账号。
+- 持久应用日志15:09–15:10的auth/me四次、subscriptions/active两次均200，全天未找到这两路径的应用503；Caddy无可用历史访问记录，不反推历史代理绝无503。用户明确回复“刷新后正常，仅保留旧错误”。当前经认证源站两接口均200、真实浏览器登录/账号页重载正常，故后台旧记录不再作为持续故障；与业务空池503分开归因。
+- 原账号14/9测试请求分别在15:09:46.710/15:10:42.353结束，HTTP200、耗时25.215/26.105秒，未记录account_test.failed；这只证明请求结束，不能据此宣称原浏览器收到成功终态。为补该观察，仅对当前已启用且无运行时阻断的账号9/gpt-6.1-sol发起一次原页面常规测试，16:55:13–15成功返回content、test_complete(success=true)唯一终态和最终timing；服务端总1950.433592ms、首内容1797.925229ms，浏览器含网络3.468秒。连接为复用，不伪造新建连接耗时；非长期SLA、模型身份验真或旧Mac/BPS会话修复证明。
+- 公网原页面实际成功卡和最终指标已截图目视核验，request_id=f5501685-186d-4f35-b0ad-d607c7178d5d；test_requests=1、http_errors/page_errors/configuration_writes均0，账号前后active/schedulable/限流/临时阻断相同，刷新正常。前三次自动化在模型测试发送前受导览/滚动遮挡，均test_requests=0；最后通过页面普通导览关闭按钮再按“更多→测试连接→选择模型→开始测试”完成，不注入DOM或隐藏遮罩造成功。原失败保留在production-503-live-check.json的previous_attempt中。
+- 本地go test -tags=unit ./internal/service -run '^(TestAccountTestKeepalive|TestAccountConnectionTiming|TestRateLimitService_RecoverAccountAfterSuccessfulTest|TestRateLimitDisableSchedulingOn429SurvivesSuccessfulTestRecovery)' -count=1 -parallel=2 -timeout=3m通过1.878s，涵盖恢复不重开持久停调。go test -race -tags=unit ./internal/integration/accountconnectiontiming -run '^TestAccountConnectionTiming' -count=1 -parallel=2 -timeout=5m通过1.265s；正常/错误/EOF/超时/取消/并发经真实HTTP/原handler-service产生11个SSE夹具。
+- 首轮无夹具的前端17pass/44skip仅为部分证据，随后用上述同源11个夹具执行pnpm exec vitest run src/components/account/__tests__/AccountConnectionTiming.spec.ts src/components/account/__tests__/AccountTestModal.spec.ts --maxWorkers=2 --minWorkers=1，最终61pass/0skip/2文件，11.62s。Browserslist旧数据提示保留，未为本局部验收更新依赖。夹具与GOTMPDIR统一在H:/Root/DevCache/tmp/sub2api-503-account-timing，消费者退出后11文件11471B原生删除、exists=false，共用缓存保留。
+- 仅更新原STATE/设计任务与本追加记录，无业务代码/生产配置/分组/监测规则改动、不重启或重发应用、不运行CI。同期再次核对实际/proc/1/exe仍为.5哈希，自有production/integration与应用源一致、活动PR列表为空；文档提交与应用源码身份分开。D9.2明确截图事件验收done，D8/D9其余协议/后台混版、旧失败会话和原外部来源/缓存契约仍开放。
