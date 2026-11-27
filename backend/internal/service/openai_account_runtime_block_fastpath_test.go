@@ -5,7 +5,9 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,60 @@ func TestExplicitQuotaWithoutResetCoolsInsteadOfRetrying(t *testing.T) {
 			_, started := svc.openaiOAuth429RetryStartedAt.Load(account.ID)
 			require.False(t, started)
 		})
+	}
+}
+
+func TestOpenAIPrincipalOnlyFundingPolicyBeforeOutput(t *testing.T) {
+	const fundingError = `{"error":{"message":"赠金无法使用001活动分组分组：活动分组只能用本金支付，请充值本金后再试"}}`
+	for _, native := range []bool{false, true} {
+		for _, tc := range []struct {
+			name         string
+			enabled      bool
+			body         string
+			wantFailover bool
+		}{
+			{"before_configuration", false, fundingError, false},
+			{"funding_rejection", true, fundingError, true},
+			{"ordinary_client_400", true, `{"error":{"code":"invalid_request_error","message":"Missing required parameter: input"}}`, false},
+		} {
+			t.Run(tc.name+map[bool]string{false: "/compat", true: "/native"}[native], func(t *testing.T) {
+				repo := &errorPolicyRepoStub{}
+				limits := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+				gateway := &OpenAIGatewayService{cfg: &config.Config{}, rateLimitService: limits}
+				limits.SetAccountRuntimeBlocker(gateway)
+				account := &Account{ID: 15, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+					Credentials: map[string]any{"temp_unschedulable_enabled": tc.enabled, "temp_unschedulable_rules": []any{map[string]any{
+						"error_code": float64(http.StatusBadRequest), "keywords": []any{"活动分组只能用本金支付"},
+						"duration_minutes": float64(1), "scope": "account", "stream_timing": "before_stream", "trigger_count": float64(1),
+					}}}}
+				c, rec := newNonStreamingFailoverContext(t)
+				resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}
+				var err error
+				if native {
+					_, err = gateway.handleErrorResponse(c.Request.Context(), resp, c, account, []byte(`{"model":"gpt-6.1-sol","input":"hello"}`), "gpt-6.1-sol")
+				} else {
+					if next := gateway.failoverOpenAIUpstreamHTTPError(c.Request.Context(), c, account, resp, []byte(tc.body), "", "gpt-6.1-sol"); next != nil {
+						err = next
+					}
+				}
+				var failover *UpstreamFailoverError
+				if tc.wantFailover {
+					require.ErrorAs(t, err, &failover)
+					require.True(t, failover.ShouldRetryNextAccount())
+					require.False(t, failover.RetryableOnSameAccount)
+					require.False(t, c.Writer.Written())
+					require.Empty(t, rec.Body.String())
+					require.Equal(t, 1, repo.tempCalls)
+					require.True(t, gateway.isOpenAIAccountRuntimeBlocked(account))
+				} else {
+					require.False(t, errors.As(err, &failover))
+					require.Zero(t, repo.tempCalls)
+					require.False(t, gateway.isOpenAIAccountRuntimeBlocked(account))
+				}
+				require.Equal(t, StatusActive, account.Status)
+				require.True(t, account.Schedulable, "a temporary policy must preserve the manual scheduling switch")
+			})
+		}
 	}
 }
 
