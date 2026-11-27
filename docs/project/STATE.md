@@ -3,12 +3,12 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-M2.1进行中：网关/计费弱引用红绿已验；完整回归12GiB终止后，堆剖析98.8%归属审核队列及数千常驻worker。
-R1.3已验：2.25.4-ransub.3/源55a8388f3，实际程序31db69bd708b/固定镜像fe791d9b150d。
-PR9正常快进合并/无冲突，自有production/integration同源；官方70abfd1c5祖先保留，不CI。
-原PG/Redis/16账号、499迁移与历史及回滚保持；公网/UI/唯一结算已验，非长期SLA。
-inactive关闭200ms红→race三轮9.494s通过；完整42612/静态97280、35784仍运行。先固定候选/隔离副本，不切生产。
-原28项20done/8部分，不借R1.3或子例改总数；受保护历史scratch不绕行，凭据文件仍缺。
+M2.1进行中：完整handler1484根/5773pass、admin827根/1595pass通过；原2skip保留，峰值1.61GiB。
+生命周期race三轮6.399s；Redis5退出/拥有者三包绿；最终lint0/vet0。测试断言补检查，待固定最终源。
+R1.3生产仍2.25.4-ransub.3/55a8388f3，程序31db69bd708b/镜像fe791d9b150d；PG/Redis/499迁移保持。
+官方最新v2.25.4/70abfd1c5已包含；原28项20done/8部分不变，不CI、不碰在研线。
+下一步最终源提交/单PR、同源.4构建、现有快照隔离副本升级回退，验后发行切换与业务检查。
+冗余回归已停；本轮C:/Users/Administrator/AppData/Local/Temp/go-build1127496170清理被策略拦截，保留由宿主处理。
 <!-- resume:end -->
 
 ## 目标与入口
@@ -35,7 +35,7 @@ inactive关闭200ms红→race三轮9.494s通过；完整42612/静态97280、3578
 | D4.2 | done | 配置失败/空对象/错组拒绝，HTTP/WS/免费及恢复；原断言、默认标签、vet及Linux完整通过 |
 | M1 | done | 未引用辅助符号及死计数器已删，unused归零 |
 | M2 | done | 历史断言/错误处理/静态诊断已修，原回归及lint通过 |
-| M2.1 | in_progress | 67网关/21审核拥有者；审核Stop/生产退出接线进行中，完整回归/静态/单PR/.4发行待验 |
+| M2.1 | in_progress | 完整双包7368pass/2原skip、1.61GiB、生命周期race/静态通过；单PR/.4副本回退与上线待验 |
 | M3 | done | WinSock持久故障识别与5轮真实备用链通过，超时/重置不误判 |
 | M4 | done | 三处私有原子持久化收敛；22项Windows失败修复，双平台回归/vet/lint通过 |
 | M5 | done | 生产依赖边界保留，兼容测试例外明确；lint及生产负向检查通过 |
@@ -64,14 +64,14 @@ inactive关闭200ms红→race三轮9.494s通过；完整42612/静态97280、3578
 
 ## 工作区与验证约定
 
-- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前production；origin自有ransub2api，官方upstream禁推。
+- 唯一工作树：`H:/Root/jiaoben/01_AI接口与网关/sub2api`，当前integration/upstream-stable；origin自有ransub2api，官方upstream禁推。
 - 正式测试/lint/vet及失败证据见DECISIONS；unit/integration并发1–2，Redis竞争用5.0.14.1，失败不改报通过。
 - 协议/区域/CLI及图片夹具的覆盖、复现和清理见DECISIONS；本地夹具不等于供应商验收。
 - 不增平行实现/台账；C盘effb8271不计主线，开发统一H盘。
 
 ## 下一项工作
 
-M2.1继续42612完整回归及97280/35784静态；准备.4同源制品/隔离副本，通过后合并发布。原外部验收不变。
+M2.1固定最终源/单PR，复用.4快照做同源副本升级回退；通过后发行/切换、核验退出与真实流。原外部验收不变。
 
 ## 外部等待与清理
 

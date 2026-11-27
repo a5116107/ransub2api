@@ -2829,3 +2829,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 诊断临时四文件205001674逻辑字节已移除；首次本地保护检查把当前PowerShell命令自身误识别为消费者而未删，按具体原生compiler/profiler/test拥有者核对后删除。保留profile/文本及Go复用缓存，未触碰历史受保护scratch。
 
 - inactive关闭独立RED为真实DeadlineExceeded/0.20s（非编译失败）；优化后生命周期与原worker边界race三轮9.494s通过。生产审核停止从并行步骤移到依赖关闭之前的串行阶段：仍用原10秒期限，失败即保留依赖，成功日志必须在后续资源关闭前出现；wire与wire_gen一致，原最小清理与区域资金顺序测试0.764s通过。最终源码静态与完整单进程沿新句柄继续，未提前关项。
+
+
+### 2026-11-27 M2.1：完整单进程通过与最终静态收敛
+
+- 恢复原运行的handler-fixture-full-optimized.json：returncode=0、passed=true、resource_terminated=false；handler 1484根/5773 pass事件、841.313s，admin 827根/1595 pass事件、2.376s，总947.094s，峰值私有1731653632B（1.61GiB）。保留原DingTalk禁用及Windows符号链接权限2个skip；此前12GiB终止和中途主动终止均不改绿。完整匹配运行结果已找回后，立即终止误启的重复回归，不累加其通过事件。
+- 最终静态发现inactive-worker测试类型断言未检查，原位改为双返回值并require.True；运行逻辑未改变。修改后生命周期race三轮6.399s通过；server/handler/admin退出与拥有者专项在既有Redis5路径通过1.373/3.470/1.431s。首次遗漏PATH使用系统Redis3的两叶store_unavailable失败保留，不改生产Lua或期望结果；恢复H:/Root/tools/redis/5.0.14.1后原断言通过。
+- 最终go vet五包退出0；已安装H:/Root/DevCache/tools/golangci-lint-v2.15.0.exe（Go1.27.4）增量四目录lint退出0/0 issues。系统旧Go1.26编译的lint因版本不符退出3，未算通过；Go格式与diff检查通过，旧worker/cleanup Background薄封装引用0。发布工具Windows复查仍有既知bash路径/执行位失败；匹配源码WSL/Linux92项通过1.556s证据复用，不弱化断言、不重复跑同源Linux全套。
+- 官方当前latest仍v2.25.4，production70abfd1c5已包含；自有production仍8fca8308f、.3运行，PR待建立，无在研功能并入。先固定.4最终源并副本验收，未提前发布/切换，M2.1保持in_progress，原28项20done/8部分不变。
+- 冗余测试消费者64040/39856/48312已退出；其C:/Users/Administrator/AppData/Local/Temp/go-build1127496170清理命令被宿主策略拦截，未执行亦不跨工具重试，目录由宿主/拥有者释放。原受保护scratch保持。
