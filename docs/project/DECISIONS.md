@@ -2838,3 +2838,15 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终go vet五包退出0；已安装H:/Root/DevCache/tools/golangci-lint-v2.15.0.exe（Go1.27.4）增量四目录lint退出0/0 issues。系统旧Go1.26编译的lint因版本不符退出3，未算通过；Go格式与diff检查通过，旧worker/cleanup Background薄封装引用0。发布工具Windows复查仍有既知bash路径/执行位失败；匹配源码WSL/Linux92项通过1.556s证据复用，不弱化断言、不重复跑同源Linux全套。
 - 官方当前latest仍v2.25.4，production70abfd1c5已包含；自有production仍8fca8308f、.3运行，PR待建立，无在研功能并入。先固定.4最终源并副本验收，未提前发布/切换，M2.1保持in_progress，原28项20done/8部分不变。
 - 冗余测试消费者64040/39856/48312已退出；其C:/Users/Administrator/AppData/Local/Temp/go-build1127496170清理命令被宿主策略拦截，未执行亦不跨工具重试，目录由宿主/拥有者释放。原受保护scratch保持。
+
+
+### 2026-11-27 M2.1交付：.4同源、副本回退及生产审核排空
+
+- 最终源5e220a84ad65013b7347f227f5d41583939d29ab，本地正式制品H:/Root/DevCache/releases/ransub2api/2.25.4-ransub.4/5e220a84ad65。程序170922144B/SHA9573785eed2aea8fb2d690edb16180e6f58ad0c8bfd25809df4f35f8bf481800，归档54249114B/SHAca8ca89e96909151ea1f0e7ae4a0f6de9dea4cd75e23fce500bbd84fe1b0df96；本地构建/类型检查退出0，临时frontend目录0。原536929617的未发布根制品4文件删除被宿主策略拦截（input归档/manifest、checksums.txt、release-manifest.json），保持原状、不换工具/移动/覆盖绕行；正式版本按新源码身份构建，全部消费者已改用上述唯一最终路径。保留旧失败与原构建日志。
+- 复用既有生产快照22835441c7b184b243b0a15632c94dfcc327745695d347ff788d7c595a06a8f2、103765460B，在内部网络恢复副本，.3→.4→.3→.4四阶段实际程序哈希匹配；16账号/原分组/售价/配置、499迁移checksum与11张历史表摘要保持，两个candidate均记录ContentModerationService succeeded，7个容器/网络资源按ID/标签回收。production_changed=false，不访问付费供应商、不改生产检测规则。
+- PR10固定head5e220a84a/base8fca8308f，同上下文逐项审核非独立审核；mergeable/CLEAN且无检查任务，用户授权内正常快进，03:56:20Z GitHub标MERGED。两个自有稳定ref/标签同源，官方70abfd1c5祖先保留，不force/删branch，不并入供应池在研线。自动Release临时停用防止源码构建，03:56:42Z四资产digest核验后正式发布.4并恢复active。run45937056036仅publish-prebuilt-image成功52s，其他七源码作业skipped，无编译/测试CI；GHCR固定镜像643ef532a01d56ff703b812554b6bf7856f7d0672bfb05141926336e7db79f13与程序同源。
+- 生产pull/deploy/verify均退出0：在线更新API校验SHA并保留旧程序，排空后切换，后台SIGTERM优雅重启及同镜像重建三阶段实际加载相同.4；确认审核排空日志先于Redis和CyberEvidence依赖关闭，无强制退出/排空超时。最终APPf94a7122768c、原PGf30095818cb1/Redis5b796d6478e0不变，16账号/2组/1用户/1Key/499迁移保持；current=latest=2.25.4-ransub.4、has_update=false，源站TLS健康、维护路由移除。切换期间旧进程正常结算的用户余额变化保留，未回填旧快照覆盖；停后cutover备份706db3bc90b3004bb27e14fb0a5fd04135a8e84657f9cd2fa795741298468a2d保持。服务器/opt/sub2api不是Git工作树，线上权威为已核验容器及/proc/1/exe，不虚报远程源码checkout。
+- 公网public-smoke退出0/passed=true：真实登录及16账号性能/timer、保留流量/守护/工单禁用边界、中英1440/390总览过滤/下钻/编辑预填/授权/失败隐藏与恢复/键盘/沙箱、工具检测预算和混合复核说明均通过。pageerror/HTTP错误/配置写入/付费检测均0，原120/300秒首输出及优先调度关闭保持。本轮观察到真实等待轮次17669仍中性；样本17646与持久结果一致，不将截图文字或单条样本推广为模型整体质量。JSON文件保留UTF8结论，终端编码替换字符不回写源码。
+- 一次真实gpt-6.1-sol SSE完整终态1、正文正常，耗时1.953秒含本机网络（非纯上游TTFT），client55904f87-4a40-4e97-872b-1c10b9cd44cd，usage140726/上游9、输入53/输出5；关联usage1/claim1/quote1/旧event0，canonical实际费和wallet_debit/付款人一致。该样本不是长期SLA、模型身份、缓存域或旧Mac/BPS全面恢复证明。
+- 先dry-run再复核SHA及/proc/容器挂载0引用，删除服务器候选170922144B及cutover字段37135B，共170959279逻辑字节；rollback_preserved=true/health=ok，保留.3程序、镜像、数据库、数据、配置和诊断归档。不将逻辑删除量冒称全盘空间释放；本地受保护scratch不重试。所有原外部等待及轮换凭据输入保持。
+- M2.1本项验收完整关闭，R1当前版本更新.4；原28项20done/8部分不因子任务或发布而改总数。D2/D4待供应商请求关联/模型fast来源契约，D5/D6及依赖解释待可信缓存域/TTL/前缀与净收益，D3其他能力/插件计量和D8/D9完整混版/旧会话仍待原条件。验收后续仅更新文档的提交不改变上述不可变构建源。
