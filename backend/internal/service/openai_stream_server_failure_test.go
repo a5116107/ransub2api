@@ -187,3 +187,19 @@ func TestOpenAIStreamReadFailureUserDetailsDoNotInventHTTP2(t *testing.T) {
 	require.Contains(t, verified.ErrorBody, "HTTP/2")
 	require.Contains(t, verified.ErrorBody, OpenAIUpstreamHTTP2StreamErrorCode)
 }
+
+func TestOpenAIStreamReadFailurePassthroughPreservesLocalLimits(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded, ErrUpstreamResponseBodyTooLarge} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			c, rec := newNonStreamingFailoverContext(t)
+			body := &openAIStreamReadThenErrorCloser{reader: strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"), err: cause}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: body}
+			_, err := newNonStreamingFailoverService().handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 9}, time.Now(), "model", "model")
+			require.Error(t, err)
+			_, marked := GetOpsStreamError(c)
+			require.False(t, marked, "local cancellation and limits are not provider transport evidence")
+			require.Contains(t, rec.Body.String(), "partial answer")
+			require.NotContains(t, rec.Body.String(), "response.failed")
+		})
+	}
+}

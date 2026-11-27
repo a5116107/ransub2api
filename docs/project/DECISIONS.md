@@ -2904,3 +2904,12 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新真实HTTP reader回归进一步证实：透传输出后unexpected EOF只有半截内容，缺少失败终态。已在原分支补唯一标准response.failed，停止心跳并闭合残帧；保留原内容、实际HTTP200及输出后不重放/不重复生成和结算。此次比最初“只改诊断”增加必要终态修复，依据真实失败断言，不扩张为已输出后自动续写。
 - 原调用点overlay RED：service原生/透传归因断言及真实handler持久归因断言失败。前端原实现7失败/3通过，修后55项通过25.28s，vue-tsc -b与定向eslint退出0。初轮新增测试还发现原始字符串JSON误转义和队列已将events序列化的夹具假设，原位修正为真实UpstreamErrorsJSON断言；另保留透传缺终态的行为RED。最终Go同一服务/handler专项通过1.701/5.266s，无跳过或弱化原HTTP2断言。
 - 证据沿既有sub2api-quality-evidence/production-recent-failures{,-latest,-correlated}.json及stream-read-attribution-*。官方又合入204fe3a93（issue1077）：仅明确账号握手拒绝且物理零发送/自包含请求可换号，流内额度保留唯一失败与用量；准备与D9.3同一PR交付.6。预览唯一冲突为regionalMeterAttempt字段，保留自研videoRejected/videoBound并加入canceledBeforeStart，不丢弃任一边界；尚未合并/发行/切换，生产仍.5，原28项20done/8部分不变。
+
+### 2026-11-27 R1.5整合与18:49新截图关联
+
+- 官方204fe3a93正常合并的唯一内容冲突已按字段保留处理；新增issue1077工作流改为仅workflow_dispatch，手动ref/组名/资产身份同步适配，不触发编译测试CI。新测试原Bind/GetSessionTurnState旧签名编译失败保留；适配自研OpenAIWSContinuationScope后，又以实际日志复现gpt-5.1经OAuth解析为gpt-5.4，旧夹具播种错误模型作用域。使用真实resolveOpenAIForwardMappedModels生成有效作用域，原cached_turn_state拒绝重放断言通过1.466s，未删除断言或削弱隔离。
+- 最终源码专项645个pass事件、两包10.220/18.406s，fail/skip均0；go vet两包及前端55项/类型/eslint退出0。race服务通过，handler首次在并发AST/编译压力下两个24MiB自动桥接用例触发原45秒夹具期限；空闲同源单独复验两例均通过，未调大期限/缩小报文，完整race专项串行收尾中。原七类增量lint首次超时退出4；限内存后的测试AST分析超过8分钟预算仍未退出，已按PID/创建时间/命令核验只结束该拥有的分析进程；生产-only七类亦报0issues但超时4，均不当绿色结果，采用已通过的完整两包vet与后续焦点静态结果分开报告。
+- 生产只读准备完成：104427748B数据库快照/SHA256 0ec2647f26583723dc5c56be498960bf15ea1dd5fb0645009e10621a8d1652cf，16账号/499迁移、原PG/Redis及.5程序febf2c734e26已核验；production_changed=false。未切换、未改价/分组/检测规则，后续副本复用同一快照，不另复制生产环境。
+- 用户新截图18:49:36错误11426/request3bab5a90-5e53-445a-8f82-5d78e35b3e1f、clientc0efd2d5-72cf-43a6-ad9a-4f68a882d6c9已直接取证：18:47:32请求5954260B进入HTTP Responses，账号14在18:48:34响应头超时并switch_count=1/max10切9，9在18:49:36亦响应头超时，duration130604ms；两个响应头超时记录中的504为本地策略语义，不证明供应商返回HTTP504；持久访问日志实际wire200（已提交流），Ops业务失败502也不当线上HTTP502证据。9/14均group2且可调、无代理，两个已配置base_url的站点origin相同；本次不是没有换号，也不是独立供应商间切换。同窗9/14分别有9/10条完成记录，不能据单请求推广整体不可用；该次失败不以D9.3读取归因补丁宣称已恢复。
+- 截图右侧status0/ERR_PROXY_CONNECTION_FAILED/ERR_TUNNEL_CONNECTION_FAILED属于浏览器代理链失败、未取得HTTP响应，不是后台接口503。此时本机系统代理10808监听正常，直连健康200/1.936s、经代理200/0.393s；未改变浏览器/系统代理配置，未将当前健康反推历史代理始终正常。新证据保存production-184936-{errors,correlation,metadata}.json，未读取或导出对话正文。
+- 固定源码完整race专项在重型分析/编译退出后通过：111个pass事件、service1.294s/handler61.878s，fail/skip均0；原45秒单case期限不改，不弱化24MiB报文或负向断言。保留先前压力条件失败，最终结果绑定candidate-race-idle-full.jsonl。

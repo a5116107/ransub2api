@@ -2945,7 +2945,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 		}
 		s.recordOpenAIProxyStreamDisconnect(account, err, upstreamRequestID, resp)
 		recordOpenAIStreamReadFailure(c, account, upstreamRequestID, true, err)
-		if !failureDelivered {
+		if !failureDelivered && shouldClassifyOpenAIUpstreamStreamReadError(err, ctx, c.Request.Context()) {
 			stopKeepalive()
 			code, message := classifyOpenAIUpstreamStreamReadError(err)
 			source, _ := json.Marshal(gin.H{"error": gin.H{"type": "upstream_error", "code": code, "message": message}})
