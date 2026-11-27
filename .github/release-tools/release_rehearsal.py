@@ -29,13 +29,48 @@ except (URLError,TimeoutError,ConnectionError):
 print(json.dumps(result))
 '''
 
+# Small, bounded RFC6455 fixture codec shared by the actual client and server.
+# No compression/extensions are negotiated, and payloads never leave the fixture.
+WEBSOCKET_IO = r'''import base64,hashlib,secrets,socket,struct
+def ws_exact(stream,size):
+    value=b''
+    while len(value)<size:
+        chunk=stream.read(size-len(value))
+        if not chunk:raise EOFError('WebSocket peer closed')
+        value+=chunk
+    return value
+def ws_read(stream,masked):
+    a,b=ws_exact(stream,2)
+    if a&0x70 or not a&0x80 or bool(b&0x80)!=masked:
+        raise ValueError('unsupported fixture WebSocket frame')
+    size=b&127
+    if size==126:size=struct.unpack('!H',ws_exact(stream,2))[0]
+    elif size==127:size=struct.unpack('!Q',ws_exact(stream,8))[0]
+    if size>1048576 or (a&15>=8 and size>125):raise ValueError('fixture frame too large')
+    mask=ws_exact(stream,4) if masked else b''
+    data=ws_exact(stream,size)
+    if mask:data=bytes(v^mask[i%4] for i,v in enumerate(data))
+    return a&15,data
+def ws_send(sock,opcode,data,masked):
+    size=len(data)
+    if size>1048576:raise ValueError('fixture frame too large')
+    prefix=bytes([0x80|opcode,(0x80 if masked else 0)|(size if size<126 else 126 if size<65536 else 127)])
+    if size>=126:prefix+=struct.pack('!H' if size<65536 else '!Q',size)
+    if masked:
+        mask=secrets.token_bytes(4);prefix+=mask
+        data=bytes(v^mask[i%4] for i,v in enumerate(data))
+    sock.sendall(prefix+data)
+def ws_accept(key):
+    return base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+'''
+
 # This upstream lives on the rehearsal's internal network. It emits no model
 # claims and never forwards a request outside the fixture.
-REQUEST_UPSTREAM = r'''import json,threading,time
+REQUEST_UPSTREAM = WEBSOCKET_IO + r'''import json,threading,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 lock=threading.Lock()
 gate=threading.Event();gate.set()
-state={'active':0,'peak':0,'calls':0,'hold_next':False}
+state={'active':0,'peak':0,'calls':0,'hold_next':False,'ws_calls':0,'ws_continuations':0}
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def reply(self,body):
@@ -43,7 +78,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200);self.send_header('Content-Type','application/json')
         self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_GET(self):
+        if self.path=='/v1/responses' and self.headers.get('Upgrade','').lower()=='websocket':
+            self.websocket();return
         with lock:self.reply(dict(state))
+    def websocket(self):
+        self.send_response(101);self.send_header('Upgrade','websocket');self.send_header('Connection','Upgrade')
+        self.send_header('Sec-WebSocket-Accept',ws_accept(self.headers['Sec-WebSocket-Key']));self.end_headers()
+        self.close_connection=True;self.connection.settimeout(35)
+        previous=None
+        try:
+            while True:
+                opcode,raw=ws_read(self.rfile,True)
+                if opcode==8:
+                    ws_send(self.connection,8,raw,False);return
+                if opcode==9:ws_send(self.connection,10,raw,False);continue
+                if opcode==10:continue
+                if opcode!=1:raise ValueError('fixture expected text')
+                body=json.loads(raw)
+                if body.get('type')!='response.create':raise ValueError('fixture expected response.create')
+                if body.get('previous_response_id'):
+                    if body['previous_response_id']!=previous:raise ValueError('fixture continuation changed')
+                    with lock:state['ws_continuations']+=1
+                with lock:state['ws_calls']+=1
+                def emit(event):ws_send(self.connection,1,json.dumps(event).encode(),False)
+                previous=self.generate(body,emit)
+        except (EOFError,OSError,TimeoutError,ValueError):return
     def do_POST(self):
         size=int(self.headers.get('Content-Length','0'))
         body=json.loads(self.rfile.read(size) or b'{}')
@@ -55,32 +114,38 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/release':
             gate.set();self.reply({'released':True});return
         if self.path!='/v1/responses':self.send_error(404);return
+        self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+        def emit(event):
+            self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode());self.wfile.flush()
+        self.generate(body,emit)
+    def generate(self,body,emit):
         with lock:
             state['active']+=1;state['calls']+=1
             state['peak']=max(state['peak'],state['active'])
             hold=state['hold_next'];state['hold_next']=False
             number=state['calls']
         try:
-            self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-            def emit(event):
-                self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode());self.wfile.flush()
             rid='resp_rehearsal_'+str(number)
             emit({'type':'response.created','response':{'id':rid,'status':'in_progress'}})
             emit({'type':'response.output_text.delta','delta':'fixture OK'})
             deadline=time.monotonic()+30
             while hold and not gate.wait(.1):
                 if time.monotonic()>=deadline:raise TimeoutError('fixture release deadline')
-                self.wfile.write(b': fixture heartbeat\n\n');self.wfile.flush()
+                if self.headers.get('Upgrade','').lower()=='websocket':
+                    ws_send(self.connection,9,b'fixture heartbeat',False)
+                else:
+                    self.wfile.write(b': fixture heartbeat\n\n');self.wfile.flush()
             emit({'type':'response.completed','response':{'id':rid,'status':'completed','model':body['model'],
                   'output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'fixture OK'}]}],
                   'usage':{'input_tokens':16,'output_tokens':4}}})
+            return rid
         except (BrokenPipeError,ConnectionResetError,TimeoutError):pass
         finally:
             with lock:state['active']-=1
 ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()
 '''
 
-STREAM_CLIENT = r'''import json,sys
+STREAM_CLIENT = WEBSOCKET_IO + r'''import json,sys
 from urllib.request import Request,ProxyHandler,build_opener
 from urllib.error import HTTPError,URLError
 p=json.load(sys.stdin)
@@ -90,6 +155,48 @@ request=Request('http://127.0.0.1:8080/v1/responses',headers=headers,
                 data=json.dumps({'model':'gpt-6.1-sol','input':p['case'],'stream':True,
                                  'store':False,'max_output_tokens':32}).encode())
 result={'status':0,'completed':0,'deltas':0,'errors':0,'cancelled':False,'client_request_id':'','error_code':''}
+if p.get('websocket'):
+    result.update(close_code=0,response_ids=[])
+    with socket.create_connection(('127.0.0.1',8080),timeout=15) as sock:
+        with sock.makefile('rb',buffering=0) as stream:
+            key=base64.b64encode(secrets.token_bytes(16)).decode()
+            raw=('GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\n'
+                 'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: '+key+'\r\n'
+                 'Authorization: Bearer '+p['key']+'\r\nSession_id: '+p['case']+'\r\nX-Request-ID: '+p['case']+'\r\n\r\n')
+            sock.sendall(raw.encode())
+            status=stream.readline(8192).decode().split();result['status']=int(status[1])
+            received={};total=0
+            while True:
+                line=stream.readline(8192);total+=len(line)
+                if total>65536 or not line:raise ValueError('invalid fixture handshake')
+                if line==b'\r\n':break
+                name,value=line.decode().split(':',1);received[name.lower()]=value.strip()
+            result['client_request_id']=received.get('x-client-request-id','')
+            if result['status']!=101:raise ValueError('fixture WebSocket upgrade failed')
+            if received.get('sec-websocket-accept')!=ws_accept(key):raise ValueError('invalid fixture WebSocket accept')
+            for turn in range(p.get('turns',1)):
+                body={'type':'response.create','model':'gpt-6.1-sol','input':p['case'],'store':False,'max_output_tokens':32}
+                if result['response_ids']:body['previous_response_id']=result['response_ids'][-1]
+                ws_send(sock,1,json.dumps(body).encode(),True)
+                for _ in range(100):
+                    opcode,raw=ws_read(stream,False)
+                    if opcode==8:
+                        result['close_code']=struct.unpack('!H',raw[:2])[0] if len(raw)>=2 else 1005
+                        break
+                    if opcode==9:ws_send(sock,10,raw,True);continue
+                    if opcode==10:continue
+                    if opcode!=1:raise ValueError('fixture expected text event')
+                    event=json.loads(raw);kind=event.get('type')
+                    if kind in ('response.failed','response.incomplete','error'):
+                        result['errors']+=1
+                        result['error_code']=event.get('error',{}).get('code','')
+                    if kind=='response.output_text.delta' and event.get('delta'):result['deltas']+=1
+                    if kind=='response.completed':
+                        result['completed']+=1;result['response_ids'].append(event['response']['id']);break
+                else:raise ValueError('fixture WebSocket terminal absent')
+                if result['close_code']:break
+            if not result['close_code']:ws_send(sock,8,struct.pack('!H',1000),True)
+    print(json.dumps(result));raise SystemExit(0)
 try:
     with build_opener(ProxyHandler({})).open(request,timeout=15) as response:
         result.update(status=response.status,client_request_id=response.headers.get('x-client-request-id',''))
@@ -233,7 +340,8 @@ class Rehearsal:
                'SERVER_MODE': 'release', 'RUN_MODE': 'standard', 'DATA_DIR': '/app/data', 'TZ': 'UTC'}
         command = ['/rehearsal-bin']
         if getattr(self.args, 'overlap_requests', False):
-            policy = {'gateway': {'upstream_key_concurrency': {'revision': 1, 'limits': {
+            policy = {'gateway': {'openai_ws': {'mode_router_v2_enabled': True, 'apikey_enabled': True},
+                                  'upstream_key_concurrency': {'revision': 1, 'limits': {
                 hashlib.sha256(MIXED_KEY.encode()).hexdigest(): 1}}}}
             env['CONFIG_FILE'] = '/app/data/rehearsal.yaml'
             launcher = ("import os,pathlib;pathlib.Path('/app/data/rehearsal.yaml').write_text("
@@ -356,9 +464,12 @@ class Rehearsal:
         require(response['status'] == 200, 'isolated upstream control failed at ' + path)
         return response['data']
 
-    def stream_request(self, node, key, case, *, cancel=False):
+    def stream_request(self, node, key, case, *, cancel=False, websocket=False, turns=1):
+        payload = {'key': key, 'case': case, 'cancel': cancel}
+        if websocket:
+            payload.update(websocket=True, turns=turns)
         reply = self.docker('exec', '-i', node, 'python', '-c', STREAM_CLIENT,
-                            input=json.dumps({'key': key, 'case': case, 'cancel': cancel}))
+                            input=json.dumps(payload))
         return json.loads(reply.stdout)
 
     def wait_request_state(self, *, active, slots, calls=None):
@@ -380,16 +491,17 @@ class Rehearsal:
                 and response['errors'] == 0 and not response['cancelled'], 'mixed stream did not complete exactly once')
         return self.verify_request_settlement(response['client_request_id'], account, group, multiplier)
 
-    def verify_request_settlement(self, request_id, account, group, multiplier):
+    def verify_request_settlement(self, request_id, account, group, multiplier, *, websocket=False):
         require(re.fullmatch(r'[A-Za-z0-9_-]{1,255}', request_id), 'invalid mixed-stream request identity')
+        billing_id = request_id if websocket else 'client:' + request_id
         query = f"""SELECT jsonb_build_object('usage',count(*),'account',min(u.account_id),'group',min(u.group_id),
             'rate',min(u.rate_multiplier),
-            'claims',(SELECT count(*) FROM usage_billing_dedup WHERE request_id='client:{request_id}'),
-            'quotes',(SELECT count(*) FROM usage_billing_quotes WHERE request_id='client:{request_id}'),
+            'claims',(SELECT count(*) FROM usage_billing_dedup WHERE request_id='{billing_id}'),
+            'quotes',(SELECT count(*) FROM usage_billing_quotes WHERE request_id='{billing_id}'),
             'canonical_matches',bool_and(q.canonical_actual_cost=u.actual_cost),
             'debit_matches',bool_and(q.wallet_debit=u.actual_cost AND q.debited_user_id=u.user_id))
             FROM usage_logs u LEFT JOIN usage_billing_quotes q
-            ON q.request_id=u.request_id AND q.api_key_id=u.api_key_id WHERE u.request_id='client:{request_id}'"""
+            ON q.request_id=u.request_id AND q.api_key_id=u.api_key_id WHERE u.request_id='{billing_id}'"""
         deadline = time.monotonic() + 15
         while True:
             observed = json.loads(self.sql(query))
@@ -403,6 +515,63 @@ class Rehearsal:
                 and observed['rate'] == multiplier, 'mixed stream changed account/group or selling rate')
         require(observed['canonical_matches'] and observed['debit_matches'], 'mixed stream debit attribution mismatch')
         return observed
+
+    def exercise_websocket_overlap(self, peer, keys, accounts, groups, rates):
+        proof = {'scope': 'native_responses_websocket_capacity_continuation_and_settlement',
+                 'status': 'running', 'cases': [], 'shared_key_limit': 1}
+        self.result['websocket_overlap'] = proof
+        row_counts = "SELECT jsonb_build_object('usage',(SELECT count(*) FROM usage_logs),'claims',(SELECT count(*) FROM usage_billing_dedup),'quotes',(SELECT count(*) FROM usage_billing_quotes))"
+        try:
+            before_rows = json.loads(self.sql(row_counts))
+            for index, (first, second) in enumerate(((peer, self.app), (self.app, peer))):
+                for holder_ws, contender_ws in ((True, True), (True, False), (False, True)):
+                    before = self.wait_request_state(active=0, slots=0)['calls']
+                    case = f'mixed-ws-{index}-{int(holder_ws)}-{int(contender_ws)}'
+                    self.fixture_api('/arm', {})
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pending = pool.submit(self.stream_request, first, keys[index], case, websocket=holder_ws)
+                        try:
+                            self.wait_request_state(active=1, slots=1, calls=before + 1)
+                            rejected = self.stream_request(second, keys[1-index], case+'-full', websocket=contender_ws)
+                            if contender_ws:
+                                require(rejected['status'] == 101 and rejected['close_code'] == 1013
+                                        and not rejected['response_ids'] and rejected['deltas'] == 0,
+                                        'mixed WS saturation did not close without output')
+                            else:
+                                require(rejected['status'] == 503 and rejected['error_code'] == 'upstream_key_admission_unavailable',
+                                        'mixed HTTP saturation lost admission reason')
+                            self.wait_request_state(active=1, slots=1, calls=before + 1)
+                        finally:
+                            self.fixture_api('/release', {})
+                        completed = pending.result(timeout=20)
+                    if holder_ws:
+                        require(completed['status'] == 101 and completed['completed'] == 1 and completed['deltas'] > 0
+                                and not completed['errors'] and not completed['close_code'], 'native WS holder failed')
+                        self.verify_request_settlement(completed['response_ids'][0], accounts[index], groups[index], rates[index], websocket=True)
+                    else:
+                        self.verify_stream_settlement(completed, accounts[index], groups[index], rates[index])
+                    self.wait_request_state(active=0, slots=0, calls=before + 1)
+                    recovered = self.stream_request(second, keys[1-index], case+'-recovery', websocket=True, turns=2)
+                    require(recovered['status'] == 101 and recovered['completed'] == 2 and recovered['deltas'] >= 2
+                            and not recovered['errors'] and not recovered['close_code']
+                            and len(set(recovered['response_ids'])) == 2, 'native WS continuation did not complete two unique turns')
+                    for response_id in recovered['response_ids']:
+                        self.verify_request_settlement(response_id, accounts[1-index], groups[1-index], rates[1-index], websocket=True)
+                    state = self.wait_request_state(active=0, slots=0, calls=before + 3)
+                    require(state['peak'] == 1, 'mixed WS/HTTP doubled physical generation')
+                    proof['cases'].append({'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
+                        'holder': 'ws' if holder_ws else 'http', 'contender': 'ws' if contender_ws else 'http',
+                        'rejected_sends': 0, 'held_unique_settlement': True, 'recovery_unique_turns': 2})
+            proof.update(status='compatible', successful_turns=18, rejected_requests=6,
+                         continuation_roundtrips=state['ws_continuations'], peak_physical_concurrency=state['peak'])
+            require(state['ws_calls'] == 16 and state['ws_continuations'] == 6, 'native WS evidence missing or contaminated by HTTP fallback')
+            after_rows = json.loads(self.sql(row_counts))
+            require(all(after_rows[k] - before_rows[k] == 18 for k in before_rows),
+                    'mixed WS admission rejection or retry created extra billing rows')
+            proof['rejection_billing_rows'] = 0
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+            proof['status'] = 'failed'
+            raise
 
     def exercise_request_overlap(self, token):
         overlap = {'scope': 'responses_http_shared_key_capacity_cancellation_and_settlement', 'status': 'running',
@@ -426,7 +595,9 @@ class Rehearsal:
                 account = self.api('POST', '/api/v1/admin/accounts', {
                     'name': 'mixed-key-' + str(index), 'platform': 'openai', 'type': 'apikey',
                     'credentials': {'api_key': MIXED_KEY, 'base_url': 'http://upstream:8787/v1'},
-                    'extra': {'openai_responses_mode': 'force_responses'},
+                    'extra': {'openai_responses_mode': 'force_responses',
+                              'openai_apikey_responses_websockets_v2_enabled': True,
+                              'openai_apikey_responses_websockets_v2_mode': 'passthrough'},
                     'concurrency': 2, 'rate_multiplier': 1, 'group_ids': [group]}, token)['id']
                 key = self.api('POST', '/api/v1/keys', {'name': 'mixed-' + str(index), 'group_id': group}, token)['key']
                 accounts.append(account); groups.append(group); keys.append(key)
@@ -503,6 +674,7 @@ class Rehearsal:
             overlap.update(status='compatible', peak_physical_concurrency=state['peak'],
                            cancellation_released_after_terminal=True, rejection_billing_rows=0,
                            successful_streams=6, drained_cancelled_calls=2, rejected_requests=len(rejected_ids))
+            self.exercise_websocket_overlap(peer, keys, accounts, groups, rates)
         except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
             overlap['status'] = 'failed'
             raise

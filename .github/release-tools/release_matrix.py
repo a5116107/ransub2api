@@ -439,7 +439,7 @@ def main():
     for arg in ('baseline', 'candidate', 'candidate-sha', 'scratch', 'output'):
         p.add_argument('--' + arg, required=True)
     p.add_argument('--overlap-config', action='store_true', help='Also verify concurrent old/new control-plane writes; does not authorize mixed traffic')
-    p.add_argument('--overlap-requests', action='store_true', help='Also verify two-version Responses HTTP shared-key capacity, cancellation and settlement using an isolated upstream')
+    p.add_argument('--overlap-requests', action='store_true', help='Also verify two-version Responses HTTP/native WebSocket shared-key capacity, HTTP cancellation, WS continuation and settlement using an isolated upstream')
     p.add_argument('--runtime-image', default='python:3.11-slim')
     p.add_argument('--postgres-image', default='postgres:17-alpine')
     p.add_argument('--redis-image', default='redis:7-alpine')

@@ -298,6 +298,18 @@ class ReleaseRehearsalTest(unittest.TestCase):
         self.assertTrue(args[-1].endswith("os.execv('/rehearsal-bin',['/rehearsal-bin'])"))
         self.assertFalse(run.result['mixed_version_isolation_verified'])
 
+    def test_mixed_request_policy_enables_native_ws_only_inside_the_fixture(self):
+        self.args.overlap_requests = True
+        run = rehearsal.Rehearsal(self.args)
+        run.result['candidate_binary_sha256'] = 'fixture-digest'
+        with patch.object(run, 'create', return_value='c' * 64) as create, \
+                patch.object(run, 'api', side_effect=[{'status':'ok'}, {'access_token':'fixture'}, {'required':False}]), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'fixture-digest', '')):
+            run.start_app(Path(self.args.candidate), 'candidate')
+        self.assertIn('mode_router_v2_enabled', create.call_args.args[-1],
+                      'the mixed fixture must exercise native WS rather than HTTP fallback')
+        self.assertIn('apikey_enabled', create.call_args.args[-1])
+
     def test_stream_credentials_are_stdin_only_and_request_identity_is_distinct(self):
         run = rehearsal.Rehearsal(self.args)
         with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, '{"status":503}', '')) as docker:
@@ -305,6 +317,85 @@ class ReleaseRehearsalTest(unittest.TestCase):
         self.assertNotIn('synthetic-key', repr(docker.call_args.args))
         self.assertEqual(json.loads(docker.call_args.kwargs['input']),
                          {'key':'synthetic-key','case':'case-id','cancel':False})
+
+    def test_websocket_credentials_are_stdin_only_with_explicit_turn_count(self):
+        run = rehearsal.Rehearsal(self.args)
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, '{"status":101}', '')) as docker:
+            self.assertEqual(run.stream_request('node', 'sensitive-key', 'ws-case', websocket=True, turns=2), {'status':101})
+        self.assertNotIn('sensitive-key', repr(docker.call_args.args))
+        self.assertEqual(json.loads(docker.call_args.kwargs['input']),
+                         {'key':'sensitive-key','case':'ws-case','cancel':False,'websocket':True,'turns':2})
+
+    def test_websocket_codec_bounds_and_masking(self):
+        namespace = {}
+        exec(rehearsal.WEBSOCKET_IO, namespace)
+        for masked in (False, True):
+            for size in (0, 125, 126, 65535, 65536):
+                with self.subTest(masked=masked, size=size):
+                    from unittest.mock import Mock
+                    sock = Mock()
+                    data = b'x' * size
+                    namespace['ws_send'](sock, 1, data, masked)
+                    self.assertEqual(namespace['ws_read'](io.BytesIO(sock.sendall.call_args.args[0]), masked), (1, data))
+        for raw in (b'\x01\x00', b'\xc1\x00', b'\x81\x80', b'\x81\x7f'+(1048577).to_bytes(8, 'big'), b'\x89\x7e\x00\x7e'):
+            with self.subTest(raw=raw), self.assertRaises((EOFError, ValueError)):
+                namespace['ws_read'](io.BytesIO(raw), False)
+        self.assertEqual(namespace['ws_accept']('dGhlIHNhbXBsZSBub25jZQ=='), 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=')
+
+    def test_native_websocket_fixture_roundtrip_and_continuation_are_real(self):
+        import socket
+        import threading
+        namespace = {}
+        code = rehearsal.REQUEST_UPSTREAM.replace("ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()",
+                                                   "server=ThreadingHTTPServer(('127.0.0.1',0),Handler)")
+        exec(code, namespace)
+        server = namespace['server']
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connect = socket.create_connection
+        try:
+            for turns in (1, 2):
+                stdout = io.StringIO()
+                payload = {'key':'private-fixture-key','case':'fixture-ws','websocket':True,'turns':turns}
+                with patch('sys.stdin', io.StringIO(json.dumps(payload))), patch('sys.stdout', stdout), \
+                        patch('socket.create_connection', side_effect=lambda addr, **kwargs: connect(server.server_address, **kwargs)):
+                    with self.assertRaises(SystemExit) as done:
+                        exec(rehearsal.STREAM_CLIENT, {})
+                self.assertEqual(done.exception.code, 0)
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result['status'], 101)
+                self.assertEqual(result['completed'], turns)
+                self.assertEqual(len(set(result['response_ids'])), turns)
+                self.assertEqual(result['errors'], 0)
+                self.assertEqual(result['close_code'], 0)
+                self.assertNotIn('private-fixture-key', stdout.getvalue())
+            self.assertEqual(namespace['state']['ws_calls'], 3)
+            self.assertEqual(namespace['state']['ws_continuations'], 1)
+            self.assertEqual(namespace['state']['peak'], 1)
+            self.assertEqual(namespace['state']['active'], 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
+    def test_websocket_settlement_uses_upstream_turn_id_not_connection_id(self):
+        run = rehearsal.Rehearsal(self.args)
+        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,
+                    'canonical_matches':True,'debit_matches':True}
+        with patch.object(run, 'sql', return_value=json.dumps(observed)) as sql:
+            run.verify_request_settlement('resp_fixture_1', 3, 4, .12, websocket=True)
+        self.assertIn("request_id='resp_fixture_1'", sql.call_args.args[0])
+        self.assertNotIn('client:resp_fixture_1', sql.call_args.args[0])
+
+    def test_websocket_overlap_failed_state_never_claims_compatibility(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'candidate'
+        with patch.object(run, 'sql', return_value='{}'), patch.object(run, 'wait_request_state', side_effect=RuntimeError('fixture unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'fixture unavailable'):
+                run.exercise_websocket_overlap('peer', [], [], [], [])
+        self.assertEqual(run.result['websocket_overlap']['status'], 'failed')
+        self.assertFalse(run.result['mixed_version_isolation_verified'])
 
     def test_stream_client_observes_terminal_and_cancellation_without_echoing_credentials(self):
         from unittest.mock import MagicMock

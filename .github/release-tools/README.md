@@ -107,14 +107,15 @@ own evidence. In particular, a `2.21.0-ransub.9` writer drops the newer
 `cache_weight` field; drain and retire that writer before managing newer policy.
 An old-client save through a new server is not proof that an old binary is safe.
 
-### Optional two-version Responses HTTP request check
+### Optional two-version Responses HTTP and native WebSocket request check
 
 Add `--overlap-requests` to that same command; it can be combined with
 `--overlap-config`. It starts an isolated upstream on the internal network and
 uses the verified baseline and candidate binaries against the fixture's shared
 PostgreSQL and Redis. No real supplier is contacted and no port is published.
-The two synthetic accounts explicitly select native Responses, avoiding an
-unrelated automatic capability probe changing the protocol under test.
+The two synthetic accounts explicitly select native Responses HTTP and WebSocket
+passthrough, avoiding an unrelated automatic capability probe changing the
+protocol under test. WS mode routing is enabled only in the isolated fixture.
 
 Two accounts in different product groups share one upstream Key with a total
 ceiling of **1**, while retaining their individual ceilings of 2. Both directions
@@ -136,9 +137,21 @@ the particular node being started, not whichever node is currently primary.
 
 `request_overlap.status=compatible` covers only
 `responses_http_shared_key_capacity_cancellation_and_settlement` for that exact
-binary pair. `mixed_version_isolation_verified` stays **false**: WebSocket,
-regional ownership, background jobs, other non-text capabilities and supplier
-cache lifetime remain separate observations. The normal drained upgrade,
+binary pair. The same run additionally records `websocket_overlap`: both node
+directions must enforce the shared ceiling across WS/WS, WS/HTTP and HTTP/WS,
+with no extra physical generation or billing for six rejected requests. Each
+recovery uses two turns on one real native WebSocket, preserving the preceding
+response ID and verifying a unique usage/claim/quote per upstream turn, its
+account, group, fixed selling rate and debit owner. The fixture codec uses only
+Python's standard library, validates the handshake and frame bounds, negotiates
+no compression, and contacts no external WebSocket service.
+
+`websocket_overlap.status=compatible` covers only
+`native_responses_websocket_capacity_continuation_and_settlement` for the exact
+binary pair. `mixed_version_isolation_verified` stays **false**: WebSocket
+active cancellation, regional ownership, background jobs, other non-text
+capabilities and supplier cache lifetime remain separate observations.
+The normal drained upgrade,
 rollback, re-upgrade and captured-ID cleanup still run. This check does not
 authorize mixed-version production traffic or change the production rollout.
 
