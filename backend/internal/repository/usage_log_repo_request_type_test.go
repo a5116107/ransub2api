@@ -110,6 +110,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sql.NullString{}, // platform
 			nil,              // customer_cost_details
 			nil,              // procurement_cost_snapshot
+			false,            // sla_excluded
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
@@ -212,6 +213,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sql.NullString{}, // platform
 			nil,              // customer_cost_details
 			nil,              // procurement_cost_snapshot
+			false,            // sla_excluded
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
@@ -292,8 +294,8 @@ func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestT
 	prepared := prepareUsageLogInsert(log)
 
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-8])
-	require.Equal(t, true, prepared.args[len(prepared.args)-8])
+	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-9])
+	require.Equal(t, true, prepared.args[len(prepared.args)-9])
 	require.Equal(t, int16(service.RequestTypeStream), prepared.args[30])
 	require.Equal(t, service.RequestTypeStream, log.RequestType)
 	require.True(t, log.Stream)
@@ -982,6 +984,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // platform
 			sql.NullString{}, // customer_cost_details
 			sql.NullString{}, // procurement_cost_snapshot
+			false,            // sla_excluded
 		}})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
@@ -1069,6 +1072,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // platform
 			sql.NullString{}, // customer_cost_details
 			sql.NullString{}, // procurement_cost_snapshot
+			false,            // sla_excluded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1139,6 +1143,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // platform
 			sql.NullString{}, // customer_cost_details
 			sql.NullString{}, // procurement_cost_snapshot
+			false,            // sla_excluded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1210,6 +1215,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // platform
 			sql.NullString{}, // customer_cost_details
 			sql.NullString{}, // procurement_cost_snapshot
+			false,            // sla_excluded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1226,7 +1232,7 @@ func TestUsageLogRepositoryGetModelStatsAccountFilterKeepsActualCost(t *testing.
 	end := start.Add(24 * time.Hour)
 	accountID := int64(42)
 
-	mock.ExpectQuery("COALESCE\\(SUM\\(actual_cost\\), 0\\) as actual_cost,\\s+COALESCE\\(SUM\\(COALESCE\\(account_stats_cost, total_cost\\) \\* COALESCE\\(account_rate_multiplier, 1\\)\\), 0\\) as account_cost").
+	mock.ExpectQuery("COALESCE\\(SUM\\(actual_cost\\), 0\\) as actual_cost,\\s+COALESCE\\(SUM\\(COALESCE\\(account_stats_cost, usage_free_tier_quote\\(customer_cost_details, rate_multiplier\\), total_cost\\) \\* COALESCE\\(account_rate_multiplier, 1\\)\\), 0\\) as account_cost").
 		WithArgs(start, end, accountID).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model", "requests", "input_tokens", "output_tokens",
@@ -1250,7 +1256,7 @@ func TestUsageLogRepositoryGetEndpointStatsAccountFilterKeepsActualCost(t *testi
 	end := start.Add(24 * time.Hour)
 	accountID := int64(42)
 
-	mock.ExpectQuery("COALESCE\\(SUM\\(actual_cost\\), 0\\) as actual_cost,\\s+COALESCE\\(SUM\\(COALESCE\\(account_stats_cost, total_cost\\) \\* COALESCE\\(account_rate_multiplier, 1\\)\\), 0\\) as account_cost").
+	mock.ExpectQuery("COALESCE\\(SUM\\(actual_cost\\), 0\\) as actual_cost,\\s+COALESCE\\(SUM\\(COALESCE\\(account_stats_cost, usage_free_tier_quote\\(customer_cost_details, rate_multiplier\\), total_cost\\) \\* COALESCE\\(account_rate_multiplier, 1\\)\\), 0\\) as account_cost").
 		WithArgs(start, end, accountID).
 		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost", "account_cost"}).
 			AddRow("/v1beta/models", int64(3), int64(30), 6.0, 2.4, 0.9))

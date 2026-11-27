@@ -289,6 +289,7 @@ export interface PublicSettings {
   pelican_showcase_enabled?: boolean
   /** When false, the whole user-facing subscription surface is hidden. Default true. */
   subscription_enabled: boolean
+  api_key_multi_group_enabled?: boolean
   /** Mirrors payment config BALANCE_PAYMENT_DISABLED; true = balance top-up closed (subscription-only site). */
   payment_balance_disabled: boolean
   model_plaza_enabled: boolean
@@ -1502,7 +1503,7 @@ export interface Account {
   proxy_fallback_origin_name?: string | null
   concurrency: number
   load_factor?: number | null
-  current_concurrency?: number // Real-time concurrency count from Redis
+  current_concurrency?: number | null // Redis slot count; null means observation unavailable
   scheduler_score?: {
     base_score: number
     sticky_score?: number
