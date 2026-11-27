@@ -262,6 +262,10 @@ class Rehearsal:
         if check and result.returncode:
             # Commands may carry generated credentials. Do not include argv or
             # unfiltered application/engine output in errors or evidence.
+            detail = result.stderr[-2000:]
+            for secret in (self.password, self.jwt, MIXED_KEY, *getattr(self, 'request_keys', [])):
+                detail = detail.replace(secret, '[redacted]')
+            self.result['docker_failure'] = {'operation': args[0], 'stderr_tail': detail}
             raise RuntimeError('Docker operation failed: ' + args[0])
         return result
 
@@ -669,6 +673,7 @@ class Rehearsal:
                         'both mixed-request instances must be running')
             self.sql("UPDATE users SET balance=100, concurrency=16 WHERE email='rehearsal@example.invalid'")
             accounts, groups, keys, rates = [], [], [], [.12, .15]
+            self.request_keys = keys
             for index, rate in enumerate(rates):
                 group = self.api('POST', '/api/v1/admin/groups', {'name': 'mixed-requests-' + str(index),
                                  'platform': 'openai', 'rate_multiplier': rate, 'subscription_type': 'standard'}, token)['id']

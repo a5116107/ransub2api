@@ -581,6 +581,19 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.docker('run', '--env', 'SECRET=' + run.password)
         self.assertNotIn(run.password, str(error.exception))
 
+    def test_docker_failure_redacts_all_fixture_credentials_in_evidence(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.request_keys = ['synthetic-downstream-key']
+        values = [run.password, run.jwt, rehearsal.MIXED_KEY, *run.request_keys]
+        reply = subprocess.CompletedProcess([], 1, '', 'ValueError: ' + ' '.join(values))
+        with patch.object(subprocess, 'run', return_value=reply):
+            with self.assertRaisesRegex(RuntimeError, 'Docker operation failed: exec'):
+                run.docker('exec', 'fixture-node')
+        detail = json.dumps(run.result['docker_failure'])
+        self.assertIn('ValueError', detail)
+        for secret in values:
+            self.assertNotIn(secret, detail)
+
     def test_cleanup_uses_captured_ids_in_reverse_dependency_order(self):
         run = rehearsal.Rehearsal(self.args)
         run.resources = [('network', 'b' * 64), ('container', 'c' * 64)]
