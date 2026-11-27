@@ -5,6 +5,7 @@
  */
 export const NEW_FEATURE_NOTICES = {
   balanceForecast: 'balance-exhaustion-forecast-initial-announcement',
+  apiKeyMultiGroupPolicy: 'api-key-multi-group-policy-v1',
   monitorV3ComponentModels: 'channel-monitor-v3-component-models',
   adminKeyFullAccess: 'admin-key-full-access-compatibility',
   upstreamBillingGroupSync: 'upstream-billing-group-sync',

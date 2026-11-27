@@ -152,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
 ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()
 '''
 
-STREAM_CLIENT = WEBSOCKET_IO + r'''import json,sys
+STREAM_CLIENT = WEBSOCKET_IO + r'''import json,sys,time
 from urllib.request import Request,ProxyHandler,build_opener
 from urllib.error import HTTPError,URLError
 p=json.load(sys.stdin)
@@ -185,7 +185,8 @@ if p.get('websocket'):
                 body={'type':'response.create','model':'gpt-6.1-sol','input':p['case'],'store':False,'max_output_tokens':32}
                 if result['response_ids']:body['previous_response_id']=result['response_ids'][-1]
                 ws_send(sock,1,json.dumps(body).encode(),True)
-                for _ in range(100):
+                deadline=time.monotonic()+35
+                while time.monotonic()<deadline:
                     opcode,raw=ws_read(stream,False)
                     if opcode==8:
                         result['close_code']=struct.unpack('!H',raw[:2])[0] if len(raw)>=2 else 1005
@@ -487,14 +488,24 @@ class Rehearsal:
 
     def wait_request_state(self, *, active, slots, calls=None):
         fingerprint = hashlib.sha256(MIXED_KEY.encode()).hexdigest()
-        deadline = time.monotonic() + 15
+        started = time.monotonic()
+        deadline = started + 15
+        samples = []
         while True:
             state = self.fixture_api('/stats')
             held = int(self.docker('exec', self.redis, 'redis-cli', '--raw', 'ZCARD',
                                   'concurrency:upstream_key:slots:' + fingerprint).stdout.strip())
+            now = time.monotonic()
+            samples.append({'elapsed_ms': int((now - started) * 1000),
+                            'active': state['active'], 'slots': held, 'calls': state['calls'],
+                            'hold_next': state.get('hold_next'), 'ws_cancelled': state.get('ws_cancelled')})
+            samples = samples[-16:]
             if state['active'] == active and held == slots and (calls is None or state['calls'] == calls):
                 return state
-            require(time.monotonic() < deadline, 'mixed request/slot state did not converge: '
+            if now >= deadline:
+                self.result['request_state_failure'] = {'samples': samples, 'expected_active': active,
+                                                       'expected_slots': slots, 'expected_calls': calls}
+            require(now < deadline, 'mixed request/slot state did not converge: '
                     + json.dumps({'active': state['active'], 'slots': held, 'calls': state['calls'],
                                   'expected_active': active, 'expected_slots': slots, 'expected_calls': calls}))
             time.sleep(.1)
@@ -547,6 +558,8 @@ class Rehearsal:
                     with ThreadPoolExecutor(max_workers=1) as pool:
                         pending = pool.submit(self.stream_request, first, keys[index], case, websocket=holder_ws)
                         try:
+                            proof['active_case'] = {'direction': index, 'holder_ws': holder_ws,
+                                                    'contender_ws': contender_ws, 'node': first}
                             self.wait_request_state(active=1, slots=1, calls=before + 1)
                             rejected = self.stream_request(second, keys[1-index], case+'-full', websocket=contender_ws)
                             if contender_ws:
@@ -557,6 +570,13 @@ class Rehearsal:
                                 require(rejected['status'] == 503 and rejected['error_code'] == 'upstream_key_admission_unavailable',
                                         'mixed HTTP saturation lost admission reason')
                             self.wait_request_state(active=1, slots=1, calls=before + 1)
+                        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+                            if pending.done():
+                                try:
+                                    proof['holder_failure'] = pending.result()
+                                except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as error:
+                                    proof['holder_failure_type'] = type(error).__name__
+                            raise
                         finally:
                             self.fixture_api('/release', {})
                         completed = pending.result(timeout=20)
@@ -578,6 +598,7 @@ class Rehearsal:
                     proof['cases'].append({'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
                         'holder': 'ws' if holder_ws else 'http', 'contender': 'ws' if contender_ws else 'http',
                         'rejected_sends': 0, 'held_unique_settlement': True, 'recovery_unique_turns': 2})
+            proof.pop('active_case', None)
             proof.update(status='compatible', successful_turns=18, rejected_requests=6,
                          continuation_roundtrips=state['ws_continuations'], peak_physical_concurrency=state['peak'])
             require(state['ws_calls'] == 16 and state['ws_continuations'] == 6, 'native WS evidence missing or contaminated by HTTP fallback')

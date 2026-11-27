@@ -2948,3 +2948,16 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 新工具测试39例已验；为实际变更重跑release-tools矩阵，Windows原生43例有7个shell路径错误及1个POSIX chmod断言失败（未改断言），转同源小文件到WSL原生/tmp隔离目录后matrix43/1.352s、rehearsal39/1.329s均通过，scratch自动清理；ruff E9/F63/F7/F82通过。工具不添加skip或降低500MiB/身份/结算边界。D8.5原旧版对仍不兼容，不授权滚动混流；生产继续.6，修复及后续官方整合完成验证前不宣称已发布。
 
 - 原位修复后，普通无usage/有usage×有无前轮4场景与原smart8场景通过（service28.801s）；扩展透传/取消/轮次/额度/Relay边界service44.457s、openai_ws_v2 6.545s通过，go vet两包exit0。最终工具39/1.659s与ruff/diff-check通过。原`.5/.6`失败证据保留，D8.5仍部分；新版修复尚未发行，生产未变。并行出现HomeView、landing中英文及home组件变更，为其他工作所有，未纳入本次提交/清理；仅精确stage本次后端/工具/状态与设计。后续R1.6继续沿串行排空发布，不以旧版部分验收替代全混版许可。
+
+
+### 2026-11-27 R1.6多分组总开关集成与自研语义保留（在验）
+
+- 本次修复33049fa1b已精确提交并推送自有feature分支；随后真实merge固定官方be1d8306a，4个冲突逐项解决：已退役issue805 workflow仍删除；wire_gen依据合并后providers重新生成，不手工丢失自研注入；SelectRequestGroup先应用站点策略，再保留自研requestedGroupID及权威组ID校验；余额预测与多组开关两个有效通知都保留。新增官方issue1081 workflow仅保留workflow_dispatch，不启动PR/编译测试CI。
+- 官方新增测试适配原自研SelectRequestGroup参数，不新增旁路重载；补动态开关下显式主组/副组/未授权组、倍率和原缓存绑定不变的用例。当前已有组默认继续开启；关闭只投影主组、不删额外关联；区域签名策略、缓存外新鲜读取、原手动停调/利润/共享额度/归属边界保持。原多分组文档原位更新，删除“本地未跑、待CI”的过期结论，不新增并行说明文档。
+- Wire首用旧本机二进制因Go1.26不支持项目Go1.27失败；只读go run因工具独有google/subcommands缺sum而停止，未改主项目锁文件；隔离版本工具固定Go1.27.0再次明确项目要求1.27.4，最后用Go1.27.4运行wire@0.7.0成功生成。一次命令在backend目录误用了backend/前缀，写种子与git rm均未发生，已在正确根处理；保留这些失败，不将其计为源代码通过。go.mod/go.sum未变。
+- 本地vitest四文件246测试通过54.58s，覆盖设置、Keys、多语言与通知；存在原router-link stub/Browserslist提示，不当失败或业务证据。vue-tsc --noEmit与13个变更面eslint均exit0。后端unit边界、普通WS修复的实际双实例CLI及发布链仍在验；生产仍.6，旧版.5/.6混流拒绝不变。并行首页与文案/组件改动未stage，正式候选必须从本次已提交源码构建，不夹带它们。
+
+- R1.6 unit五包service6.443s/handler1.501s/admin1.620s/middleware1.528s/routes1.524s通过；最终race使用TestIssue1081.*实际匹配全部相关用例，service6.206s/middleware1.204s/routes1.895s通过（第一次精确regex误少.*，两包no-tests，未作覆盖证据）。原APIContracts1.453s通过，最初在repo根运行Go无module已纠正到backend，未初始化新module。真实Linux repository测试使用当前源码跨编译、全新tmpfs PG18/Redis8，所有迁移完成，StoredBindingsSurviveToggleAndLegacyEdits实际PASS0.06s，无skip；测试程序SHA d2f7d7db0998，3个ID资源及scratch回收，无生产DSN/数据。
+- 用已提交33049fa1b非嵌入测试程序在独立双实例跑同CLI（明确为同修复版本、不是旧版混流许可）。首轮管理/HTTP及WS前三组合已过，第四持流时active/slot意外归零而calls未变，判失败并完整保留fixed-ws-cancel-remote.log，8资源回收；没有把此失败冒作结算修复已完成。区分新假设：夹具客户端把所有心跳计入100帧上限，长hold期间会在约10s提前结束。新增真实socket120心跳终态测试正确RED为terminal absent，改同一客户端为35s每轮时间界限（仍有socket15s/1MiB帧限制），40工具测试1.956s通过。不改业务重试/超时/拒绝断言；再跑实际CLI，增加有界状态采样与holder失败结果便于因果核对。失败原件均保留。
+
+- 静态检查发现上游routes测试直接复制Config，而自研Config含atomic.Pointer/noCopy；改为独立Config仅复制Gateway值，不改被测语义。routes重跑race1.282s、五包go vet exit0。心跳夹具40例最终1.956s；状态采样新增一次单调时钟读取曾使原定界测试StopIteration，改每轮只采一次并复用deadline判定后40例通过1.956s，保留15s容量观察和实际usage断言，不增加skip。各次补丁上下文/工作目录工具失败均未形成成功证据；源码merge冲突标记归零，主锁文件未变，手动CI策略已校验。

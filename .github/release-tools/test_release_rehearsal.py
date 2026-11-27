@@ -424,6 +424,37 @@ class ReleaseRehearsalTest(unittest.TestCase):
             thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
 
+    def test_native_websocket_heartbeats_do_not_exhaust_the_turn(self):
+        import socket
+        import threading
+        namespace = {}
+        code = rehearsal.REQUEST_UPSTREAM.replace("ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()",
+                                                   "server=ThreadingHTTPServer(('127.0.0.1',0),Handler)")
+        code = code.replace("emit({'type':'response.output_text.delta','delta':'fixture OK'})",
+                            "\n            for _ in range(120):ws_send(self.connection,9,b'heartbeat',False)\n            emit({'type':'response.output_text.delta','delta':'fixture OK'})")
+        exec(code, namespace)
+        server = namespace['server']
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connect = socket.create_connection
+        try:
+            stdout = io.StringIO()
+            payload = {'key':'private-fixture-key','case':'heartbeat-fixture','websocket':True}
+            with patch('sys.stdin', io.StringIO(json.dumps(payload))), patch('sys.stdout', stdout), \
+                    patch('socket.create_connection', side_effect=lambda addr, **kwargs: connect(server.server_address, **kwargs)):
+                with self.assertRaises(SystemExit) as done:
+                    exec(rehearsal.STREAM_CLIENT, {})
+            self.assertEqual(done.exception.code, 0)
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result['completed'], 1)
+            self.assertEqual(result['deltas'], 1)
+            self.assertFalse(result['cancelled'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
     def test_websocket_settlement_uses_upstream_turn_id_not_connection_id(self):
         run = rehearsal.Rehearsal(self.args)
         observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,'input_tokens':16,'output_tokens':4,
@@ -499,6 +530,12 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 patch.object(rehearsal.time, 'monotonic', side_effect=[0,16]):
             with self.assertRaisesRegex(RuntimeError, 'state did not converge.*expected_slots'):
                 run.wait_request_state(active=1,slots=1,calls=1)
+        failure = run.result['request_state_failure']
+        self.assertEqual(failure['expected_slots'], 1)
+        self.assertEqual(failure['expected_calls'], 1)
+        self.assertEqual(failure['samples'], [{'elapsed_ms':16000,'active':0,'slots':0,'calls':0,
+                                             'hold_next':None,'ws_cancelled':None}])
+        self.assertNotIn(rehearsal.MIXED_KEY, json.dumps(failure))
 
     def test_settlement_rejects_bad_stream_before_sql(self):
         run = rehearsal.Rehearsal(self.args)
