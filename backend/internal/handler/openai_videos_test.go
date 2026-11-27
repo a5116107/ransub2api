@@ -115,6 +115,7 @@ func TestOpenAIVideoLifecycle(t *testing.T) {
 	usage := &cachedBillingUsageRepo{}
 	gateway := service.NewOpenAIGatewayService(openAIImagesFailoverAccountRepo{accounts: accounts}, nil, usage, nil,
 		nil, nil, nil, bindings, cfg, nil, concurrency, service.NewBillingService(cfg, nil), nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, gateway)
 	h := NewOpenAIGatewayHandler(gateway, concurrency, billingCache,
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	router := gin.New()

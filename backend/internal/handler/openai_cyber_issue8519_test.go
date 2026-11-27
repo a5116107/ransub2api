@@ -25,7 +25,7 @@ import (
 // with the real Redis repository backed by miniredis.
 func TestRejectIfCyberSessionBlocked_Issue8519LongHistory(t *testing.T) {
 	cache := testutil.NewRedisGatewayCache(t)
-	h := newCyberIdentityAdmissionTestHandlerWithCache(map[string]string{
+	h := newCyberIdentityAdmissionTestHandlerWithCache(t, map[string]string{
 		service.SettingKeyCyberSessionBlockEnabled:          "true",
 		service.SettingKeyCyberSessionIdentityStrictEnabled: "false",
 	}, cache)

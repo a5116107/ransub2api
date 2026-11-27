@@ -35,7 +35,7 @@ func TestPinnedGroupBillingAndBusinessUseSameGroupOverHTTP(t *testing.T) {
 	keys.SetGroupRouter(pinnedBillingRouter{})
 	router := gin.New()
 	router.Use(gin.HandlerFunc(middleware2.NewAPIKeyAuthMiddleware(keys, nil, cfg)))
-	router.GET("/v1/sub2api/billing", newKeyBillingHandler(nil).KeyBillingInfo)
+	router.GET("/v1/sub2api/billing", newKeyBillingHandler(t, nil).KeyBillingInfo)
 	router.POST("/v1/responses", func(c *gin.Context) {
 		actual, ok := middleware2.GetAPIKeyFromContext(c)
 		if !ok {

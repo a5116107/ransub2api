@@ -63,6 +63,7 @@ def automatic_plan(args):
         subprocess.run(['git', 'merge-base', '--is-ancestor', f'{latest_tag}^{{commit}}', 'HEAD'], check=True)
         changed = subprocess.run(['git', 'diff', '--quiet', f'{latest_tag}^{{commit}}', 'HEAD', '--', '.',
                                   ':(exclude).github/**', ':(exclude)docs/**', ':(exclude)**/*.md',
+                                  ':(exclude)backend/**/*_test.go',
                                   ':(exclude)backend/cmd/server/VERSION'], check=False).returncode
         if changed not in (0, 1):
             raise ValueError('could not compare production with the published source')

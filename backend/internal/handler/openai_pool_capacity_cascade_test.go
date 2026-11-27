@@ -127,6 +127,7 @@ func newPoolCapacityRouter(t *testing.T, repo *poolCapacityRepo, upstream servic
 	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), rateLimits, billingCache, upstream, &service.DeferredService{},
 		nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, gateway)
 	h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billingCache,
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	groupID := int64(99)

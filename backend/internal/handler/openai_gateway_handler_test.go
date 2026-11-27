@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1498,7 +1499,7 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 		service.SettingKeyRiskControlEnabled:      "true",
 		service.SettingKeyContentModerationConfig: string(rawCfg),
 	}}
-	moderationSvc := service.NewContentModerationService(
+	moderationSvc := testutil.OwnContentModeration(t, service.NewContentModerationService(
 		settingRepo,
 		repo,
 		nil,
@@ -1507,7 +1508,7 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 		nil,
 		nil,
 		nil,
-	)
+	))
 	decision, err := moderationSvc.Check(context.Background(), service.ContentModerationCheckInput{
 		UserID:   1,
 		Endpoint: "/v1/responses",
@@ -2398,6 +2399,7 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 		nil,
 		nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	h := NewOpenAIGatewayHandler(
 		gatewaySvc,
 		service.NewConcurrencyService(nil),
@@ -2504,6 +2506,7 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 				nil,
 				nil,
 			)
+			ownOpenAIGatewayFixture(t, gatewaySvc)
 			h := NewOpenAIGatewayHandler(
 				gatewaySvc,
 				service.NewConcurrencyService(nil),
@@ -2591,6 +2594,7 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 		nil,
 		nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	h := NewOpenAIGatewayHandler(
 		gatewaySvc,
 		service.NewConcurrencyService(nil),
@@ -2814,6 +2818,7 @@ func runOpenAIResponsesWebSocketUsageLimitCase(t *testing.T, mode string, follow
 		nil,
 		nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -3037,11 +3042,13 @@ func TestOpenAIResponsesWebSocket_FirstOutputTimeoutWithoutDownstreamReusesClien
 	accountRepo := &openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}
 	rateLimitSvc := service.NewRateLimitService(accountRepo, nil, cfg, nil, nil)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc,
 		nil, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
 		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) {
@@ -3351,7 +3358,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil, // userPlatformQuotaRepo
 	)
-	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 
 	h := &OpenAIGatewayHandler{
 		cfg:                 cfg,

@@ -88,7 +88,7 @@ func TestRetrievePinnedModelPreservesMetadataFilteringAndErrors(t *testing.T) {
 			if tc.status != 0 {
 				upstream.statuses[2] = tc.status
 			}
-			codex := newPinnedCodexTestHandler([]service.Account{newPinnedCodexAccount(2, service.StatusActive, true, false)}, upstream, 3)
+			codex := newPinnedCodexTestHandler(t, []service.Account{newPinnedCodexAccount(2, service.StatusActive, true, false)}, upstream, 3)
 			h := &GatewayHandler{openAIGatewayService: codex.gatewayService, maxAccountSwitches: 3}
 			group := &service.Group{ID: 72, Platform: service.PlatformOpenAI,
 				ModelAllowlist:            service.GroupModelAllowlist{Enabled: len(tc.selected) > 0, Models: tc.selected},

@@ -318,6 +318,7 @@ func TestHTTP2PeerResetPartialImages(t *testing.T) {
 			usage := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 2)}
 			deferred := service.NewDeferredService(accounts, nil, time.Minute)
 			gateway := service.NewOpenAIGatewayService(accounts, nil, usage, nil, nil, nil, nil, nil, cfg, nil, service.NewConcurrencyService(&helperConcurrencyCacheStub{}), service.NewBillingService(cfg, nil), nil, nil, &peerResetHTTPUpstream{client: server.Client(), base: base}, deferred, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, gateway)
 			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(billing.Stop)
 			h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
@@ -390,7 +391,7 @@ func newHTTP2PeerResetHandlerWithUsage(t *testing.T, upstream service.HTTPUpstre
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
 	gateway := service.NewOpenAIGatewayService(repo, nil, usageRepo, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, billing, upstream, service.NewDeferredService(repo, nil, time.Minute), nil, nil, nil, nil, nil, nil, nil)
-	t.Cleanup(gateway.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gateway)
 	h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	h.maxAccountSwitches = 2
 	return h

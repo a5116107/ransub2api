@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func TestModerationUpstreamImagesJSONKeepaliveAndAsync(t *testing.T) {
 				h = handler
 				raw := fmt.Sprintf(`{"enabled":true,"mode":"pre_block","all_groups":true,"sample_rate":100,"timeout_ms":3000,"base_url":%q,"api_keys":["fixture"],"upstream_account_scope":"selected","upstream_account_ids":[1],"upstream_account_bindings":{"1":{"platform":"openai","type":"apikey","group_ids":[]}}}`, audit.URL)
 				settings := &contentModerationHandlerSettingRepo{values: map[string]string{service.SettingKeyRiskControlEnabled: "true", service.SettingKeyContentModerationConfig: raw}}
-				h.contentModerationService = service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, accounts)
+				h.contentModerationService = testutil.OwnContentModeration(t, service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, accounts))
 				tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
 				async := NewAsyncImageHandler(tasks, h)
 				async.execute = func(_ string, c *gin.Context) { h.Images(c); workerStatus.Store(int32(c.Writer.Status())) }

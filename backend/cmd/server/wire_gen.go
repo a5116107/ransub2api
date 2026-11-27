@@ -601,6 +601,11 @@ func provideCleanup(
 				return
 			}
 		}
+		if err := cyberModeration.Stop(ctx); err != nil {
+			log.Printf("[Cleanup] ContentModerationService failed; dependencies retained: %v", err)
+			return
+		}
+		log.Printf("[Cleanup] ContentModerationService succeeded")
 
 		type cleanupStep struct {
 			name string

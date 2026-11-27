@@ -49,6 +49,7 @@ func newGrokVoiceAvailabilityHandler(t *testing.T, reader service.AccountAvailab
 	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency,
 		nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
 		service.WithOpenAIAvailabilityReader(reader))
+	ownOpenAIGatewayFixture(t, gateway)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
 	h := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
@@ -197,6 +198,7 @@ func TestGrokVoiceAvailabilityRefusalFollowedByCredentialFailure(t *testing.T) {
 	concurrency := service.NewConcurrencyService(slots)
 	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency,
 		nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, h.gatewayService)
 	c, recorder := grokMediaSlotContext(t.Context(), false)
 	c.Request.Header.Set("Connection", "Upgrade")
 	c.Request.Header.Set("Upgrade", "websocket")
@@ -277,6 +279,7 @@ func TestGrokVoiceLeaseLossRecordsObservedUsage(t *testing.T) {
 			concurrency := service.NewConcurrencyService(slots)
 			h.gatewayService = service.NewOpenAIGatewayService(repo, nil, usage, billing, nil, nil, nil, bindings, cfg, nil, concurrency,
 				service.NewBillingService(cfg, nil), nil, nil, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, h.gatewayService)
 			groupID := int64(24)
 			key := &service.APIKey{ID: 20, UserID: 10, GroupID: &groupID, User: &service.User{ID: 10},
 				Group: &service.Group{ID: groupID, Platform: service.PlatformGrok, RateMultiplier: 1}}

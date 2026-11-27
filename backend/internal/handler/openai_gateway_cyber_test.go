@@ -196,11 +196,11 @@ func TestRejectIfCyberSessionBlocked_FailOpen(t *testing.T) {
 	require.False(t, h2.rejectIfCyberSessionBlocked(c, key, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil gateway service → pass")
 }
 
-func newCyberIdentityAdmissionTestHandler(settings map[string]string) *OpenAIGatewayHandler {
-	return newCyberIdentityAdmissionTestHandlerWithCache(settings, nil)
+func newCyberIdentityAdmissionTestHandler(t *testing.T, settings map[string]string) *OpenAIGatewayHandler {
+	return newCyberIdentityAdmissionTestHandlerWithCache(t, settings, nil)
 }
 
-func newCyberIdentityAdmissionTestHandlerWithCache(settings map[string]string, cache service.GatewayCache) *OpenAIGatewayHandler {
+func newCyberIdentityAdmissionTestHandlerWithCache(t *testing.T, settings map[string]string, cache service.GatewayCache) *OpenAIGatewayHandler {
 	settingSvc := service.NewSettingService(&contentModerationHandlerSettingRepo{values: settings}, nil)
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
@@ -208,6 +208,7 @@ func newCyberIdentityAdmissionTestHandlerWithCache(settings map[string]string, c
 		service.NewBillingService(cfg, nil), nil, nil, nil, &service.DeferredService{},
 		nil, nil, nil, nil, nil, settingSvc, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	return &OpenAIGatewayHandler{gatewayService: gatewaySvc}
 }
 
@@ -215,7 +216,7 @@ func TestRejectIfCyberSessionBlocked_StrictIdentityGate(t *testing.T) {
 	apiKey := &service.APIKey{ID: 77, Key: "sk-test", User: &service.User{ID: 9}}
 
 	t.Run("strict off remains compatible", func(t *testing.T) {
-		h := newCyberIdentityAdmissionTestHandler(map[string]string{
+		h := newCyberIdentityAdmissionTestHandler(t, map[string]string{
 			service.SettingKeyCyberSessionBlockEnabled:          "true",
 			service.SettingKeyCyberSessionIdentityStrictEnabled: "false",
 		})
@@ -226,7 +227,7 @@ func TestRejectIfCyberSessionBlocked_StrictIdentityGate(t *testing.T) {
 	})
 
 	t.Run("missing identity rejected before routing", func(t *testing.T) {
-		h := newCyberIdentityAdmissionTestHandler(map[string]string{
+		h := newCyberIdentityAdmissionTestHandler(t, map[string]string{
 			service.SettingKeyCyberSessionBlockEnabled:          "true",
 			service.SettingKeyCyberSessionIdentityStrictEnabled: "true",
 		})
@@ -239,7 +240,7 @@ func TestRejectIfCyberSessionBlocked_StrictIdentityGate(t *testing.T) {
 	})
 
 	t.Run("conflicting identity rejected", func(t *testing.T) {
-		h := newCyberIdentityAdmissionTestHandler(map[string]string{
+		h := newCyberIdentityAdmissionTestHandler(t, map[string]string{
 			service.SettingKeyCyberSessionBlockEnabled:          "true",
 			service.SettingKeyCyberSessionIdentityStrictEnabled: "true",
 		})
@@ -253,7 +254,7 @@ func TestRejectIfCyberSessionBlocked_StrictIdentityGate(t *testing.T) {
 	})
 
 	t.Run("resolved identity passes when not blocked", func(t *testing.T) {
-		h := newCyberIdentityAdmissionTestHandler(map[string]string{
+		h := newCyberIdentityAdmissionTestHandler(t, map[string]string{
 			service.SettingKeyCyberSessionBlockEnabled:          "true",
 			service.SettingKeyCyberSessionIdentityStrictEnabled: "true",
 		})

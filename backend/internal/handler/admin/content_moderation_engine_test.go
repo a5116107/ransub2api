@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,7 +74,7 @@ func (r *moderationEngineSettings) Set(_ context.Context, _ string, value string
 func TestContentModerationEngineHandlerRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	settings := &moderationEngineSettings{value: `{"api_keys":["legacy-secret"],"model":"omni-moderation-latest"}`}
-	svc := service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil)
+	svc := testutil.OwnContentModeration(t, service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil))
 	h := NewContentModerationHandler(svc)
 	router := gin.New()
 	router.PUT("/config", h.UpdateConfig)
@@ -91,7 +92,7 @@ func TestContentModerationEngineHandlerRoundTrip(t *testing.T) {
 	require.NotContains(t, w.Body.String(), "legacy-secret")
 	w = httptest.NewRecorder()
 	// Reload through a fresh service so the GET cannot rely on update-time state.
-	reloaded := NewContentModerationHandler(service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil))
+	reloaded := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil)))
 	router = gin.New()
 	router.GET("/config", reloaded.GetConfig)
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config", nil))
@@ -107,7 +108,7 @@ func TestContentModerationPerKeyURLHandlerRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	settings := &moderationEngineSettings{value: `{"engine":"typesafe","typesafe":{"base_url":"https://default.example","api_keys":["fixture-one-shared","fixture-two-shared"]}}`}
 	newHandler := func() *ContentModerationHandler {
-		return NewContentModerationHandler(service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil))
+		return NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil)))
 	}
 	h := newHandler()
 	router := gin.New()

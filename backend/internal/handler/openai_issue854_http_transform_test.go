@@ -164,6 +164,7 @@ func TestIssue854HTTPTransformMatrix(t *testing.T) {
 						}
 						option.gateway = func(h *OpenAIGatewayHandler, accounts []service.Account, upstream service.HTTPUpstream, cache service.GatewayCache, settings *service.SettingService, usage service.UsageLogRepository) {
 							h.gatewayService = service.ProvideOpenAIGatewayService(service.OpenAIGatewayDependencies{Accounts: openAIImagesFailoverAccountRepo{accounts: accounts}, Config: h.cfg, Upstream: upstream, Cache: cache, Settings: settings, UsageLogs: usage, Billing: service.NewBillingService(h.cfg, nil), Deferred: &service.DeferredService{}, TimezoneProber: issue854TimezoneProbe{}})
+							ownOpenAIGatewayFixture(t, h.gatewayService)
 						}
 					}
 					if transform == "namespace_flatten" {

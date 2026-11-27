@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/base64"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -49,7 +50,7 @@ func TestCyberEvidenceAdminOnlyReadExportDelete(t *testing.T) {
 	store := &evidenceHandlerStore{r: cyberevidence.Record{LogID: 7, RequestID: "req_synthetic", Status: "historical_unavailable", OccurredAt: time.Now()}}
 	es := cyberevidence.New(store, evidenceHandlerCipher{}, true)
 	defer es.Close()
-	cm := service.NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil).WithCyberEvidence(es)
+	cm := testutil.OwnContentModeration(t, service.NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)).WithCyberEvidence(es)
 	h := NewContentModerationHandler(cm)
 	for _, role := range []string{"", "user", "observer", "admin"} {
 		router := gin.New()

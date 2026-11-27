@@ -128,6 +128,7 @@ func newOpenAIResponsesFailoverTestHandlerWithConcurrency(t *testing.T, upstream
 		settings,
 		nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
 	concurrencyService := concurrency

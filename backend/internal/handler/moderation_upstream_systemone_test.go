@@ -40,6 +40,7 @@ func TestModerationUpstreamSystemOneLocalDenial(t *testing.T) {
 			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 			gateway := service.NewGatewayService(accounts, &fakeGroupRepo{group: group}, nil, nil, nil, nil, nil, nil, cfg, snapshot, nil, nil, nil, nil, nil, testutil.NewRealHTTPUpstream(cfg), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billing.Stop)
 			defer billing.Stop()
 			membership := 9
 			if stale {
@@ -47,7 +48,7 @@ func TestModerationUpstreamSystemOneLocalDenial(t *testing.T) {
 			}
 			raw := fmt.Sprintf(`{"enabled":true,"mode":"pre_block","all_groups":true,"sample_rate":100,"base_url":%q,"api_keys":["fixture"],"upstream_account_scope":"selected","upstream_account_ids":[1],"upstream_account_bindings":{"1":{"platform":"typesafe","type":"apikey","group_ids":[%d]}}}`, audit.URL, membership)
 			settings := &contentModerationHandlerSettingRepo{values: map[string]string{service.SettingKeyRiskControlEnabled: "true", service.SettingKeyContentModerationConfig: raw}}
-			h := &GatewayHandler{gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(&fakeConcurrencyCache{}), SSEPingFormatClaude, 0), cfg: cfg, contentModerationService: service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, accounts)}
+			h := &GatewayHandler{gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(&fakeConcurrencyCache{}), SSEPingFormatClaude, 0), cfg: cfg, contentModerationService: testutil.OwnContentModeration(t, service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, accounts))}
 			c, w := newSystemOneHandlerContext(validSystemOneHandlerBody)
 			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, group))
 			c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 7, UserID: 8, GroupID: &group.ID, Group: group, User: &service.User{ID: 8, Status: service.StatusActive}})

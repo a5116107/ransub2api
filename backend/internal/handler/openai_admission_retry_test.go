@@ -68,6 +68,7 @@ func newInitialAdmissionHandler(t *testing.T, repo *initialAdmissionRepo, upstre
 	concurrency := service.NewConcurrencyService(repo.slots)
 	gw := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, repo.cache, cfg,
 		nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, gw)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
 	h := NewOpenAIGatewayHandler(gw, concurrency, billing,

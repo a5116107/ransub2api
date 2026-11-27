@@ -2814,3 +2814,18 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - R1.3明确范围完成；原28项20done/8部分保持。完整handler单进程两轮仍因累积夹具内存终止，原失败保留；以同源码完整枚举名单分批验证，九号重分为10测试的小批，尚待其最终结果，不将分批结果冒称单进程全仓绿。
 
 - 完整枚举handler最终分批覆盖1482根：除资源终止的九号外，原12批均PASS；九号同一120根再分12小批全部PASS。去除原中止九号602条重复部分结果后，规范覆盖共5762条pass事件（含父子例）、0断言失败，保留2个原skip：TestDingTalkOAuthStart_Disabled、TestResolvePageImagePathRejectsSymlinkEscape。后者仍需Windows符号链接权限；不改skip，不冒称单进程全仓通过。证据handler-shards.json保留原passed=false及中止记录，并关联完整recovery的SHA；不是把原失败改绿。全部验证进程退出，无新源码/依赖副本，生产无再次请求或重部署。
+
+
+### 2026-11-27 M2.1：验证进程内存与审核生命周期根因
+
+- 本轮从原外部验收恢复，官方仍v2.25.4/70abfd1c5，自有稳定线8fca8308f且PR为空。继续上轮真实资源阻塞，不伪造供应商契约或关闭原8个父项。网关共用夹具8实例弱引用回收RED失败；仅加harvester停止后同测PASS，另计费worker弱引用RED失败后补Stop通过。67处网关构造绑定测试拥有者（含2处admin），删除28个被替代注册及重复defer；原业务断言不变。
+- 以上局部通过未关闭内存父项：完整单进程564.828s仍触及12GiB，993根/3867pass事件后资源终止、零断言失败但整体FAIL。保留handler-fixture-full.json，不将弱引用通过或单批通过当完整修复。
+- 最小HTTP64用例21.025s通过，GC后仅4.0MiB存活堆；随后只在外部Go overlay加TestMain诊断，未写入业务源码。真实重度WS组合的采样显示newContentModerationService占98.8%存活堆，常驻2336审核worker与73 cleanupWorker；后续超过8GiB、9000 goroutine。审核构造预分配大队列且worker/清理器永久使用Background、无关闭入口，定位后精确终止诊断与其Redis子进程，原profile/日志保留。
+- 原位补Stop(ctx)：先用生产者锁关闭异步准入，再唤醒并排空原队列；停止周期清理，调用期限耗尽时取消在途存储/上游调用。保留原队列容量、worker数、配置/禁用/质量/计费语义，不另建执行器。worker的Background薄封装已删，清理任务复用取消上下文；生产wire及wire_gen同源接入原10秒退出预算、数据库关闭前完成。21个handler/admin审核构造绑定测试拥有者，覆盖初始化失败及内联构造。
+- 生命周期专项含排空40条原审计、关闭后拒绝、360个并发生产与停止守恒、在途审计期限取消、重复停止及弱引用回收；与原闲置/配置失败保留/worker数变更回归race双轮通过8.703s。又一已开始的同源6GiB运行7.707s通过，不重复累加。旧2GiB编译阶段确有较大活跃集，准备干预时它已自然完成，未实际终止该编译器；不写作被修复/被清理。
+- 自动发行真实Git夹具RED实证Go测试变化也触发发布；原自动source diff仅排除backend *_test.go，新增边界证明运行Go源码、SQL、资源和依赖变化仍发布。Windows完整工具测试遇bash路径及执行位语义失败，未放宽断言；复用WSL/Linux同一源码与已有PyYAML，92项工具测试全部通过1.556s。正式单进程handler/admin、扩大静态、单PR/.4副本与发行上线仍待最终证据。
+
+- 第一次加入审核Stop后的完整单进程已稳定在最高约1.37GiB，但每个组合夹具遇到未参与工作的审核worker原1秒退避，821.578s后因已定位等待成本主动终止handler；没有断言失败，admin完整827根/1595pass事件/0skip通过2.530s。保留handler-fixture-full-final.json，不改报成功。补独立同步测试实证Stop在200ms期限返回DeadlineExceeded（inactive-stop-red），原位仅让持有有效配置且无任务的inactive worker响应关闭信号；配置读取失败分支保留原退避和队列，未改正常处理或worker数规则。最终完整回归使用新源码身份，不重复原未完成范围的通过计数。
+- 诊断临时四文件205001674逻辑字节已移除；首次本地保护检查把当前PowerShell命令自身误识别为消费者而未删，按具体原生compiler/profiler/test拥有者核对后删除。保留profile/文本及Go复用缓存，未触碰历史受保护scratch。
+
+- inactive关闭独立RED为真实DeadlineExceeded/0.20s（非编译失败）；优化后生命周期与原worker边界race三轮9.494s通过。生产审核停止从并行步骤移到依赖关闭之前的串行阶段：仍用原10秒期限，失败即保留依赖，成功日志必须在后续资源关闭前出现；wire与wire_gen一致，原最小清理与区域资金顺序测试0.764s通过。最终源码静态与完整单进程沿新句柄继续，未提前关项。

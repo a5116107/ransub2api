@@ -107,6 +107,7 @@ func runOpenAIResponsesImagePermissionGateTest(t *testing.T, platform string, bo
 		cfg:          &config.Config{},
 		imageLimiter: &imageConcurrencyLimiter{},
 	}
+	t.Cleanup(h.billingCacheService.Stop)
 
 	h.Responses(c)
 	return rec

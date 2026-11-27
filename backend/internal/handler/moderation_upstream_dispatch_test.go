@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +65,7 @@ func TestModerationUpstreamHTTPDispatchFamilies(t *testing.T) {
 				}
 				raw := fmt.Sprintf(`{"enabled":true,"mode":"pre_block","all_groups":true,"sample_rate":100,"base_url":%q,"api_keys":["fixture"],"upstream_account_scope":"selected","upstream_account_ids":[%d],"upstream_account_bindings":{"1":{"platform":%q,"type":"apikey","group_ids":[3131,3132]}}}`, audit.URL, id, tc.platform)
 				settings := &contentModerationHandlerSettingRepo{values: map[string]string{service.SettingKeyRiskControlEnabled: "true", service.SettingKeyContentModerationConfig: raw}}
-				h.contentModerationService = service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, openAIImagesFailoverAccountRepo{accounts: []service.Account{account}})
+				h.contentModerationService = testutil.OwnContentModeration(t, service.NewContentModerationService(settings, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}))
 				c, w := newOpenAIResponsesFailoverTestContext(t, context.Background())
 				c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 				c.Request.Header.Set("Content-Type", "application/json")

@@ -194,6 +194,7 @@ func newWSRevalidationHarness(t *testing.T, initial *service.APIKey, policy serv
 	repo := &wsRevalidationKeyRepoStub{current: initial}
 	apiKeyService := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		&openAIWSUsageHandlerAccountRepoStub{account: account},
 		nil,
@@ -208,6 +209,7 @@ func newWSRevalidationHarness(t *testing.T, initial *service.APIKey, policy serv
 		&service.DeferredService{},
 		nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	rawCache := testutil.NewRedisConcurrencyCache(t)
 	queueCache, ok := rawCache.(service.APIKeySlotQueueCache)
 	require.True(t, ok)

@@ -109,7 +109,7 @@ func newExcelBPSImageAdmissionTestHandler(t *testing.T, upstream service.HTTPUps
 		upstream,
 		nil, nil, nil, nil, nil, nil, settingService, nil,
 	)
-	t.Cleanup(func() { _ = gatewayService.CloseExcelBPSImages() })
+	ownOpenAIGatewayFixture(t, gatewayService)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
 	handler := NewOpenAIGatewayHandler(

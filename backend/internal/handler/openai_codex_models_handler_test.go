@@ -160,6 +160,7 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	group := &service.Group{
 		ID:       groupID,
@@ -230,6 +231,7 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	groupA := &service.Group{
 		ID:       91,
@@ -337,6 +339,7 @@ func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *te
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 
 	recorder := performCodexModelsRequestForGroup(t, handler, &service.Group{
@@ -387,6 +390,7 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	group := &service.Group{ID: 45, Platform: service.PlatformOpenAI}
 	first := performCodexModelsRequestForGroup(t, handler, group, "")
@@ -413,7 +417,7 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 }
 
 func TestCompositeCodexModelsReusesExistingManifestSelection(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, http.StatusServiceUnavailable)
 
 	recorder := performCodexModelsRequestForPlatform(t, handler, groupID, service.PlatformComposite)
 
@@ -435,7 +439,7 @@ func TestCodexModelsFailsOverFromRetryableUpstreamStatus(t *testing.T) {
 	}
 	for _, status := range retryableStatuses {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			handler, upstream, groupID := newCodexModelsFailoverTestHandler(status)
+			handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, status)
 			recorder := performCodexModelsRequest(t, handler, groupID)
 
 			if got, want := upstream.calls(), []int64{1, 2}; !equalInt64Slices(got, want) {
@@ -453,7 +457,7 @@ func TestCodexModelsFailsOverFromRetryableUpstreamStatus(t *testing.T) {
 func TestCodexModelsFailsOverWhenAPIKeyModelsEndpointIsUnavailable(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			handler, upstream, groupID := newCodexModelsFailoverTestHandler(status)
+			handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, status)
 			recorder := performCodexModelsRequest(t, handler, groupID)
 
 			if got, want := upstream.calls(), []int64{1, 2}; !equalInt64Slices(got, want) {
@@ -467,7 +471,7 @@ func TestCodexModelsFailsOverWhenAPIKeyModelsEndpointIsUnavailable(t *testing.T)
 }
 
 func TestCodexModelsFailsOverFromUpstreamTransportError(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, http.StatusServiceUnavailable)
 	upstream.firstErr = &net.OpError{
 		Op:  "read",
 		Net: "tcp",
@@ -484,7 +488,7 @@ func TestCodexModelsFailsOverFromUpstreamTransportError(t *testing.T) {
 }
 
 func TestCodexModelsFailsOverFromInvalidManifestEnvelope(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusOK)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, http.StatusOK)
 	upstream.firstBody = `{"object":"list","data":[]}`
 	recorder := performCodexModelsRequest(t, handler, groupID)
 
@@ -506,7 +510,7 @@ func TestCodexModelsDoesNotFailOverFromPermanentUpstreamStatus(t *testing.T) {
 	}
 	for _, status := range statuses {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			handler, upstream, groupID := newCodexModelsFailoverTestHandler(status)
+			handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, status)
 			recorder := performCodexModelsRequest(t, handler, groupID)
 
 			if got, want := upstream.calls(), []int64{1}; !equalInt64Slices(got, want) {
@@ -520,7 +524,7 @@ func TestCodexModelsDoesNotFailOverFromPermanentUpstreamStatus(t *testing.T) {
 }
 
 func TestCodexModelsDoesNotFailOverFromUpstreamConfigurationError(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, http.StatusServiceUnavailable)
 	upstream.firstErr = errors.New("invalid proxy URL")
 	recorder := performCodexModelsRequest(t, handler, groupID)
 
@@ -533,7 +537,7 @@ func TestCodexModelsDoesNotFailOverFromUpstreamConfigurationError(t *testing.T) 
 }
 
 func TestCodexModelsReturnsLastUpstreamErrorWhenAccountsAreExhausted(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandler(t, http.StatusServiceUnavailable)
 	upstream.statuses = map[int64]int{
 		1: http.StatusServiceUnavailable,
 		2: http.StatusGatewayTimeout,
@@ -552,7 +556,7 @@ func TestCodexModelsReturnsLastUpstreamErrorWhenAccountsAreExhausted(t *testing.
 }
 
 func TestCodexModelsHonorsAccountSwitchLimit(t *testing.T) {
-	handler, upstream, groupID := newCodexModelsFailoverTestHandlerWithAccountCount(http.StatusServiceUnavailable, 4, 2)
+	handler, upstream, groupID := newCodexModelsFailoverTestHandlerWithAccountCount(t, http.StatusServiceUnavailable, 4, 2)
 	upstream.statuses = map[int64]int{
 		1: http.StatusServiceUnavailable,
 		2: http.StatusBadGateway,
@@ -572,11 +576,11 @@ func TestCodexModelsHonorsAccountSwitchLimit(t *testing.T) {
 	}
 }
 
-func newCodexModelsFailoverTestHandler(firstStatus int) (*OpenAIGatewayHandler, *codexModelsFailoverHTTPUpstream, int64) {
-	return newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, 2, 3)
+func newCodexModelsFailoverTestHandler(t *testing.T, firstStatus int) (*OpenAIGatewayHandler, *codexModelsFailoverHTTPUpstream, int64) {
+	return newCodexModelsFailoverTestHandlerWithAccountCount(t, firstStatus, 2, 3)
 }
 
-func newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, accountCount, maxSwitches int) (*OpenAIGatewayHandler, *codexModelsFailoverHTTPUpstream, int64) {
+func newCodexModelsFailoverTestHandlerWithAccountCount(t *testing.T, firstStatus, accountCount, maxSwitches int) (*OpenAIGatewayHandler, *codexModelsFailoverHTTPUpstream, int64) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(42)
 	accounts := make([]service.Account, 0, accountCount)
@@ -605,6 +609,7 @@ func newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, accountCount
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	return &OpenAIGatewayHandler{gatewayService: gatewayService, maxAccountSwitches: maxSwitches}, upstream, groupID
 }
 
@@ -759,7 +764,7 @@ func newPinnedCodexAccount(id int64, status string, schedulable bool, rateLimite
 	return account
 }
 
-func newPinnedCodexTestHandler(accounts []service.Account, upstream *codexModelsPinnedHTTPUpstream, maxSwitches int) *OpenAIGatewayHandler {
+func newPinnedCodexTestHandler(t *testing.T, accounts []service.Account, upstream *codexModelsPinnedHTTPUpstream, maxSwitches int) *OpenAIGatewayHandler {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	gatewayService := service.NewOpenAIGatewayService(
@@ -769,6 +774,7 @@ func newPinnedCodexTestHandler(accounts []service.Account, upstream *codexModels
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	return &OpenAIGatewayHandler{gatewayService: gatewayService, maxAccountSwitches: maxSwitches}
 }
 
@@ -789,7 +795,7 @@ func TestCodexModelsPinnedAccountsMergeUnionWithoutScheduler(t *testing.T) {
 		2: `{"models":[{"slug":"model-a"}]}`,
 		3: `{"models":[{"slug":"model-a"},{"slug":"model-c"}]}`,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       77,
 		Platform: service.PlatformOpenAI,
@@ -816,7 +822,7 @@ func TestCodexModelsPinnedAccountsUseRateLimitedAccountAndSkipUnavailable(t *tes
 		2: `{"models":[{"slug":"from-rate-limited"}]}`,
 		5: `{"models":[{"slug":"model-five"}]}`,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       78,
 		Platform: service.PlatformOpenAI,
@@ -841,7 +847,7 @@ func TestCodexModelsPinnedAccountsPartialFailureStillSucceeds(t *testing.T) {
 		bodies:   map[int64]string{2: `{"models":[{"slug":"model-a"}]}`},
 		statuses: map[int64]int{3: http.StatusServiceUnavailable},
 	}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       79,
 		Platform: service.PlatformOpenAI,
@@ -861,7 +867,7 @@ func TestCodexModelsPinnedAccountsAllUnavailableReturns503ByDefault(t *testing.T
 		newPinnedCodexAccount(2, service.StatusActive, false, false),
 	}
 	upstream := &codexModelsPinnedHTTPUpstream{}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       80,
 		Platform: service.PlatformOpenAI,
@@ -885,7 +891,7 @@ func TestCodexModelsPinnedAccountsAllFailedReturnsUpstreamError(t *testing.T) {
 		2: http.StatusServiceUnavailable,
 		3: http.StatusGatewayTimeout,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       81,
 		Platform: service.PlatformOpenAI,
@@ -909,7 +915,7 @@ func TestCodexModelsPinnedAccountsFallbackToScheduler(t *testing.T) {
 	upstream := &codexModelsPinnedHTTPUpstream{bodies: map[int64]string{
 		1: `{"models":[{"slug":"from-scheduler"}]}`,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       82,
 		Platform: service.PlatformOpenAI,
@@ -935,7 +941,7 @@ func TestCodexModelsPinnedAccountsFallbackToSchedulerOnAllFailed(t *testing.T) {
 		bodies:   map[int64]string{1: `{"models":[{"slug":"from-scheduler"}]}`},
 		statuses: map[int64]int{2: http.StatusServiceUnavailable},
 	}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       83,
 		Platform: service.PlatformOpenAI,
@@ -960,7 +966,7 @@ func TestCodexModelsPinnedAccountsStillApplyCustomModelsListFilter(t *testing.T)
 		2: `{"models":[{"slug":"model-a"}]}`,
 		3: `{"models":[{"slug":"model-b"}]}`,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       84,
 		Platform: service.PlatformOpenAI,
@@ -988,7 +994,7 @@ func TestCodexModelsPinnedAccountsETagMatchReturns304(t *testing.T) {
 		2: `{"models":[{"slug":"model-a"}]}`,
 		3: `{"models":[{"slug":"model-c"}]}`,
 	}}
-	handler := newPinnedCodexTestHandler(accounts, upstream, 3)
+	handler := newPinnedCodexTestHandler(t, accounts, upstream, 3)
 	group := &service.Group{
 		ID:       85,
 		Platform: service.PlatformOpenAI,
@@ -1016,7 +1022,7 @@ func TestCodexModelsDiscoveryProjectsWildcardMappingWithoutAllowlist(t *testing.
 			upstream := &codexModelsPinnedHTTPUpstream{bodies: map[int64]string{
 				1: `{"models":[{"slug":"gpt-5.4"},{"slug":"blocked"},{"slug":"codex-auto-review"},{"slug":"gpt-image-2"}]}`,
 			}}
-			handler := newPinnedCodexTestHandler([]service.Account{account}, upstream, 3)
+			handler := newPinnedCodexTestHandler(t, []service.Account{account}, upstream, 3)
 			group := &service.Group{ID: 84, Platform: service.PlatformOpenAI,
 				ModelAllowlist: service.GroupModelAllowlist{Models: []string{"blocked"}},
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,7 +94,7 @@ func moderationUserRequest(t *testing.T, h *ContentModerationHandler, method, pa
 func TestModerationUserHandlerAuthority(t *testing.T) {
 	for _, role := range []string{"", "user", "observer"} {
 		repo := &moderationUserHandlerRepo{}
-		h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+		h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 		for _, path := range []string{"/users", "/users/306"} {
 			require.Equal(t, http.StatusForbidden, moderationUserRequest(t, h, "GET", path, role, "").Code)
 		}
@@ -106,7 +107,7 @@ func TestModerationUserHandlerAuthority(t *testing.T) {
 }
 func TestModerationUserHandlerValidationAndActor(t *testing.T) {
 	repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 306, Status: "disabled"}}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 	for _, body := range []string{`{}`, `{"action":"reset","confirm":true,"reason":"review"}`, `{"action":"reset","version":0,"confirm":false,"reason":"review"}`, `{"action":"exemption","version":0,"confirm":true,"reason":"review"}`, `{"action":"reset","version":-1,"confirm":true,"reason":"review"}`, `{"action":"unban","version":0,"confirm":true,"reason":"   "}`, `{"action":"reset","version":0,"confirm":true,"reason":"` + strings.Repeat("字", 501) + `"}`, `{"action":"exemption","version":0,"confirm":true,"reason":"review","auto_ban_exempt":"yes"}`} {
 		w := moderationUserRequest(t, h, "POST", "/users/306/actions", "admin", body)
 		require.Equal(t, 400, w.Code, w.Body.String())
@@ -121,7 +122,7 @@ func TestModerationUserHandlerValidationAndActor(t *testing.T) {
 }
 func TestModerationUserHandlerListFilterPrivacy(t *testing.T) {
 	repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 306, AutoBanExempt: true, Reason: "review", Status: "active"}}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 	for _, query := range []string{"?page=0", "?page=oops", "?page_size=101", "?page_size=no", "?state=unknown", "?user_id=-1", "?user_id=no"} {
 		w := moderationUserRequest(t, h, "GET", "/users"+query, "admin", "")
 		require.Equal(t, 400, w.Code, w.Body.String())
@@ -160,7 +161,7 @@ func TestModerationUserHandlerListFilterPrivacy(t *testing.T) {
 func TestModerationUserHandlerRuntimeDependencyContract(t *testing.T) {
 	repo := &moderationUserHandlerRepo{}
 	settings := &moderationUserHandlerSettings{}
-	svc := service.NewContentModerationService(settings, repo, nil, nil, nil, nil, nil, nil)
+	svc := testutil.OwnContentModeration(t, service.NewContentModerationService(settings, repo, nil, nil, nil, nil, nil, nil))
 	status, err := svc.GetStatus(context.Background())
 	require.NoError(t, err)
 	require.False(t, status.RiskControlEnabled)
@@ -178,7 +179,7 @@ func (*moderationUserFailingInvalidator) InvalidateAuthCacheByUserIDChecked(cont
 }
 func TestModerationUserHandlerCacheFailureCannotReportSuccess(t *testing.T) {
 	repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 306, Status: "active"}}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, &moderationUserFailingInvalidator{}, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, &moderationUserFailingInvalidator{}, nil)))
 	w := moderationUserRequest(t, h, "POST", "/users/306/actions", "admin", `{"action":"reset","version":0,"confirm":true,"reason":"reviewed"}`)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "MODERATION_CACHE_INVALIDATION_FAILED")
@@ -190,7 +191,7 @@ func TestModerationUserHandlerCacheFailureCannotReportSuccess(t *testing.T) {
 func TestModerationUserHandlerIndependentExemptions(t *testing.T) {
 	for _, field := range []string{"keyword_exempt", "api_audit_exempt", "email_exempt"} {
 		repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 306, Status: "disabled", CurrentCount: 10}}
-		h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+		h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 		body := `{"action":"exemption","version":0,"confirm":true,"reason":"review","` + field + `":true,"actor_id":999}`
 		for _, role := range []string{"", "user", "observer"} {
 			require.Equal(t, 403, moderationUserRequest(t, h, "POST", "/users/306/actions", role, body).Code)
@@ -212,7 +213,7 @@ func TestModerationUserHandlerIndependentExemptions(t *testing.T) {
 		}
 	}
 	repo := &moderationUserHandlerRepo{}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 	for _, filter := range []string{"auto_ban_exempt", "keyword_exempt", "api_audit_exempt", "email_exempt"} {
 		w := moderationUserRequest(t, h, "GET", "/users?state="+filter, "admin", "")
 		require.Equal(t, 200, w.Code, w.Body.String())
@@ -221,7 +222,7 @@ func TestModerationUserHandlerIndependentExemptions(t *testing.T) {
 
 func TestModerationEmailExemptionHandlerReadbackAndLegacyOmission(t *testing.T) {
 	repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 42, EmailExempt: true, AutoBanExempt: true, KeywordExempt: true, APIAuditExempt: true, CurrentCount: 10, Status: "disabled"}}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, nil, nil)))
 	w := moderationUserRequest(t, h, "POST", "/users/42/actions", "admin", `{"action":"exemption","version":0,"confirm":true,"reason":"legacy update","auto_ban_exempt":false}`)
 	require.Equal(t, 200, w.Code, w.Body.String())
 	require.Nil(t, repo.actions[0].EmailExempt)
@@ -246,7 +247,7 @@ func TestModerationEmailExemptionHandlerReadbackAndLegacyOmission(t *testing.T) 
 
 func TestModerationEmailExemptionHandlerCacheFailureCannotReportSuccess(t *testing.T) {
 	repo := &moderationUserHandlerRepo{state: service.ModerationUserState{UserID: 42, Status: "active"}}
-	h := NewContentModerationHandler(service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, &moderationUserFailingInvalidator{}, nil))
+	h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(&moderationUserHandlerSettings{}, repo, nil, nil, nil, nil, &moderationUserFailingInvalidator{}, nil)))
 	w := moderationUserRequest(t, h, "POST", "/users/42/actions", "admin", `{"action":"exemption","version":0,"confirm":true,"reason":"mail only","email_exempt":true}`)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "MODERATION_CACHE_INVALIDATION_FAILED")

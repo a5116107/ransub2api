@@ -247,6 +247,7 @@ func newGrokMediaSlotHandlerWithOptions(t *testing.T, oauth, mismatch bool, opti
 		require.NoError(t, err)
 	}
 	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, provider, nil, nil, nil, nil, nil, options...)
+	ownOpenAIGatewayFixture(t, gateway)
 	groupID := int64(24)
 	require.NoError(t, gateway.BindGrokMediaVideoRequestAccount(context.Background(), &groupID, "task", 10, 20, 1))
 	bindings.writes = 0
@@ -634,6 +635,7 @@ func TestAsyncVideoHTTPFailureDoesNotReplayButImagesStillFailOver(t *testing.T) 
 			concurrency := service.NewConcurrencyService(slots)
 			h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency,
 				nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, h.gatewayService)
 			h.maxAccountSwitches = 1
 			upstream.call = func(*http.Request, int64) (*http.Response, error) {
 				if upstream.calls == 1 {
@@ -888,6 +890,7 @@ func newRegionalVideoSettlementHandler(t *testing.T) (*OpenAIGatewayHandler, *gr
 		panic("task queries must never reserve new funds")
 	}}
 	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, cfg, nil, concurrency, nil, nil, nil, up, nil, nil, provider, nil, nil, nil, nil, nil, service.WithRegionalMetering(meter))
+	ownOpenAIGatewayFixture(t, h.gatewayService)
 	return h, slots, bindings, upstream, l
 }
 

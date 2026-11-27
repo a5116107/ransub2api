@@ -118,6 +118,7 @@ func newExcelBPSFailoverTestHandler(t *testing.T, upstream service.HTTPUpstream,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewayService)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
 	handler := NewOpenAIGatewayHandler(

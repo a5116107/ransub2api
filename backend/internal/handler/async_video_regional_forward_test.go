@@ -39,6 +39,7 @@ func TestGrokVideoRegionalForwardSkipsReceivingSlots(t *testing.T) {
 			}
 			forwarder := &regionalMediaForwardUpstream{HTTPUpstream: upstream, status: status}
 			h.gatewayService = service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, service.NewConcurrencyService(slots), nil, nil, nil, forwarder, nil, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, h.gatewayService)
 			c, recorder := grokMediaSlotContext(t.Context(), false)
 			c.Request.Header.Set("Authorization", "Bearer downstream-fixture")
 			h.GrokVideoStatus(c)

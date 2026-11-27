@@ -122,15 +122,16 @@ func newOpenAIWSPassthroughHandlerHarnessWithAuth(t *testing.T, upstreamURL stri
 	if accountRepo == nil {
 		accountRepo = &openAIWSUsageHandlerAccountRepoStub{account: account}
 	}
-	moderationSvc := service.NewContentModerationService(settingRepo, moderationRepo, nil, nil, nil, nil, nil, nil, accountRepo)
+	moderationSvc := testutil.OwnContentModeration(t, service.NewContentModerationService(settingRepo, moderationRepo, nil, nil, nil, nil, nil, nil, accountRepo))
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 8)}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo, nil, usageRepo, nil, nil, nil, nil, gatewayCache, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), service.NewRateLimitService(accountRepo, nil, cfg, nil, nil), billingCacheSvc, httpUpstream, &service.DeferredService{},
 		nil, nil, nil, nil, nil, settingSvc, nil,
 	)
-	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	concurrencyCache := &concurrencyCacheMock{
 		acquireUserSlotFn:    func(context.Context, int64, int, string) (bool, error) { return true, nil },
 		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },

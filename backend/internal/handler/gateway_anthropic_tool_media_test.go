@@ -109,7 +109,7 @@ func testAnthropicChatToolMedia(t *testing.T, native bool) {
 								nil, nil, service.NewBillingService(cfg, nil), nil, billing, upstream, &service.DeferredService{},
 								nil, nil, nil, nil, nil, nil, nil,
 							)
-							t.Cleanup(gateway.CloseOpenAIWSPool)
+							ownOpenAIGatewayFixture(t, gateway)
 							h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 							h.ChatCompletions(c)
 						} else {

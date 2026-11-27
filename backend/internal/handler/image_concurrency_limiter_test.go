@@ -216,6 +216,7 @@ func TestOpenAIGatewayHandlerResponses_TextOnlyNotRejectedByImageConcurrency(t *
 		}}},
 		imageLimiter: &imageConcurrencyLimiter{},
 	}
+	t.Cleanup(h.billingCacheService.Stop)
 	release, acquired := h.acquireImageGenerationSlot(c, false)
 	require.True(t, acquired)
 	require.NotNil(t, release)

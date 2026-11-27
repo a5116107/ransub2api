@@ -57,7 +57,7 @@ func TestOpenAIGatewayHandlerRealHTTPDeliveryFailureDoesNotInventUsageOrRecallMo
 			})
 			gateway := service.NewOpenAIGatewayService(accounts, nil, logs, billing, nil, nil, nil, nil, cfg, nil, concurrency,
 				service.NewBillingService(cfg, nil), nil, nil, repository.NewHTTPUpstream(cfg), &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
-			t.Cleanup(gateway.CloseOpenAIWSPool)
+			ownOpenAIGatewayFixture(t, gateway)
 			h := &OpenAIGatewayHandler{gatewayService: gateway, cfg: cfg, billingCacheService: billingCache,
 				apiKeyService: &service.APIKeyService{}, concurrencyHelper: NewConcurrencyHelper(concurrency, SSEPingFormatNone, 0)}
 			key := &service.APIKey{ID: 9203, UserID: 9204, GroupID: &groupID, Group: group,

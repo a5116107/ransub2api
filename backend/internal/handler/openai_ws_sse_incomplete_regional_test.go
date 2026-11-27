@@ -186,7 +186,7 @@ func TestOpenAIWSSSEIncompleteRegionalHandlerOwnsSingleResponse(t *testing.T) {
 				gateway := service.NewOpenAIGatewayService(&openAIWSUsageHandlerAccountRepoStub{account: account},
 					nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, httpUpstream,
 					nil, nil, nil, nil, nil, nil, nil, nil, service.WithRegionalMetering(meter))
-				t.Cleanup(gateway.CloseOpenAIWSPool)
+				ownOpenAIGatewayFixture(t, gateway)
 				h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billingCache,
 					service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 				key := &service.APIKey{ID: 7772, UserID: 7773, GroupID: &groupID,

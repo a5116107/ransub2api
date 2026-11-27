@@ -189,8 +189,7 @@ func TestSeedanceCompletionRecordsTokenChargeWithFullUsageQueue(t *testing.T) {
 		Config: cfg, Cache: bindings, Billing: service.NewBillingService(cfg, nil),
 		UsageBilling: billing, UsageLogs: usage, Deferred: &service.DeferredService{},
 	})
-	t.Cleanup(h.gatewayService.StopAsyncVideoKeyReleaseRecovery)
-	t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
+	ownOpenAIGatewayFixture(t, h.gatewayService)
 	c, _ := grokMediaSlotContext(t.Context(), false)
 	key, _ := middleware.GetAPIKeyFromContext(c)
 	key.Group.Platform, key.Group.RateMultiplier = service.PlatformOpenAI, 1
@@ -229,8 +228,7 @@ func TestSeedanceBillingFailureAfterCancellationReleasesClaimForRetry(t *testing
 		Config: cfg, Cache: cache, Billing: service.NewBillingService(cfg, nil),
 		UsageBilling: billing, Deferred: &service.DeferredService{},
 	})
-	t.Cleanup(h.gatewayService.StopAsyncVideoKeyReleaseRecovery)
-	t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
+	ownOpenAIGatewayFixture(t, h.gatewayService)
 	c, _ := grokMediaSlotContext(t.Context(), false)
 	key, _ := middleware.GetAPIKeyFromContext(c)
 	key.Group.Platform, key.Group.RateMultiplier = service.PlatformOpenAI, 1

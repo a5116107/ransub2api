@@ -86,8 +86,7 @@ func issue985NativeGateway(t *testing.T, upstreamURL string, billing service.Usa
 	t.Cleanup(cache.Stop)
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 32)}
 	gw := service.NewOpenAIGatewayService(repo, nil, usageRepo, billing, nil, nil, nil, nil, cfg, snapshot, nil, service.NewBillingService(cfg, nil), service.NewRateLimitService(nil, nil, cfg, nil, nil), cache, repository.NewHTTPUpstream(cfg), &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
-	t.Cleanup(gw.StopOpenAICodexTicketHarvester)
-	t.Cleanup(gw.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gw)
 	h := NewOpenAIGatewayHandler(gw, service.NewConcurrencyService(&fakeConcurrencyCache{}), cache, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	h.maxAccountSwitches = 2
 	done := make(chan struct{}, 32)

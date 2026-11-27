@@ -32,10 +32,10 @@ func (r *keyBillingUserGroupRateRepo) GetByUserAndGroup(_ context.Context, userI
 	return r.rate, r.err
 }
 
-func newKeyBillingHandler(repo service.UserGroupRateRepository) *GatewayHandler {
+func newKeyBillingHandler(t *testing.T, repo service.UserGroupRateRepository) *GatewayHandler {
 	return &GatewayHandler{
 		gatewayService:       newKeyBillingGatewayService(repo),
-		openAIGatewayService: newKeyBillingOpenAIGatewayService(repo),
+		openAIGatewayService: newKeyBillingOpenAIGatewayService(t, repo),
 	}
 }
 
@@ -46,11 +46,13 @@ func newKeyBillingGatewayService(repo service.UserGroupRateRepository) *service.
 	)
 }
 
-func newKeyBillingOpenAIGatewayService(repo service.UserGroupRateRepository) *service.OpenAIGatewayService {
-	return service.NewOpenAIGatewayService(
+func newKeyBillingOpenAIGatewayService(t *testing.T, repo service.UserGroupRateRepository) *service.OpenAIGatewayService {
+	gateway := service.NewOpenAIGatewayService(
 		nil, nil, nil, nil, nil, nil, repo, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gateway)
+	return gateway
 }
 
 func newKeyBillingContext(apiKey *service.APIKey) (*gin.Context, *httptest.ResponseRecorder) {
@@ -78,7 +80,7 @@ func TestGatewayHandlerKeyBillingInfoUsesGroupRate(t *testing.T) {
 	}
 	c, w := newKeyBillingContext(apiKey)
 
-	newKeyBillingHandler(nil).KeyBillingInfo(c)
+	newKeyBillingHandler(t, nil).KeyBillingInfo(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
@@ -121,7 +123,7 @@ func TestGatewayHandlerKeyBillingInfoUsesUserOverride(t *testing.T) {
 	c, w := newKeyBillingContext(apiKey)
 	repo := &keyBillingUserGroupRateRepo{rate: &userRate}
 
-	newKeyBillingHandler(repo).KeyBillingInfo(c)
+	newKeyBillingHandler(t, repo).KeyBillingInfo(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, repo.lookupCalls)
@@ -214,13 +216,13 @@ func TestKeyBillingInfoJSONKeepsZeroPeakMultiplierWhenEnabled(t *testing.T) {
 func TestGatewayHandlerKeyBillingInfoErrorsAreSafe(t *testing.T) {
 	t.Run("missing API key", func(t *testing.T) {
 		c, w := newKeyBillingContext(nil)
-		newKeyBillingHandler(nil).KeyBillingInfo(c)
+		newKeyBillingHandler(t, nil).KeyBillingInfo(c)
 		require.Equal(t, http.StatusUnauthorized, w.Code)
 	})
 
 	t.Run("ungrouped API key", func(t *testing.T) {
 		c, w := newKeyBillingContext(&service.APIKey{})
-		newKeyBillingHandler(nil).KeyBillingInfo(c)
+		newKeyBillingHandler(t, nil).KeyBillingInfo(c)
 		require.Equal(t, http.StatusForbidden, w.Code)
 	})
 
@@ -242,7 +244,7 @@ func TestGatewayHandlerKeyBillingInfoErrorsAreSafe(t *testing.T) {
 			GroupID: &groupID,
 			Group:   &service.Group{ID: groupID, RateMultiplier: 1},
 		})
-		newKeyBillingHandler(&keyBillingUserGroupRateRepo{err: errors.New("database password leaked")}).KeyBillingInfo(c)
+		newKeyBillingHandler(t, &keyBillingUserGroupRateRepo{err: errors.New("database password leaked")}).KeyBillingInfo(c)
 		require.Equal(t, http.StatusOK, w.Code)
 		var got keyBillingInfoResponse
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
@@ -266,7 +268,7 @@ func TestGatewayHandlerKeyBillingInfoSharesBillingResolverCacheByPlatform(t *tes
 			oldRate, newRate := 0.5, 1.8
 			repo := &keyBillingUserGroupRateRepo{rate: &oldRate}
 			gatewayService := newKeyBillingGatewayService(repo)
-			openAIGatewayService := newKeyBillingOpenAIGatewayService(repo)
+			openAIGatewayService := newKeyBillingOpenAIGatewayService(t, repo)
 			h := &GatewayHandler{
 				gatewayService:       gatewayService,
 				openAIGatewayService: openAIGatewayService,

@@ -23,7 +23,7 @@ import (
 
 func newServiceTierHandlerTest(t *testing.T) *OpenAIGatewayHandler {
 	t.Helper()
-	return &OpenAIGatewayHandler{
+	handler := &OpenAIGatewayHandler{
 		gatewayService:      &service.OpenAIGatewayService{},
 		billingCacheService: service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil),
 		apiKeyService:       &service.APIKeyService{},
@@ -33,6 +33,8 @@ func newServiceTierHandlerTest(t *testing.T) *OpenAIGatewayHandler {
 		cfg:          &config.Config{},
 		imageLimiter: &imageConcurrencyLimiter{},
 	}
+	t.Cleanup(handler.billingCacheService.Stop)
+	return handler
 }
 
 func runOpenAIHandlerServiceTierTest(t *testing.T, path, body string, handler func(h *OpenAIGatewayHandler, c *gin.Context)) *httptest.ResponseRecorder {

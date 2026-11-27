@@ -113,6 +113,7 @@ func TestWSAPIKeyAdmissionSecondTurnRejectsWithoutUpstreamRetry(t *testing.T) {
 		Credentials: map[string]any{"base_url": upstream.URL, "api_key": "sk-test"},
 		Extra:       map[string]any{"openai_apikey_responses_websockets_v2_mode": service.OpenAIWSIngressModeHTTPBridge}}
 	svc := service.NewOpenAIGatewayService(&openAIWSUsageHandlerAccountRepoStub{account: *account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, testutil.NewRealHTTPUpstream(cfg), nil, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, svc)
 	firstSettled := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

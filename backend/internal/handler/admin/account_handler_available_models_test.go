@@ -792,6 +792,8 @@ func TestQualityLiveAvailableModelsReturnsCredentialReasonInsteadOfLocalFallback
 	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{StatusCode: 401, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"code":"token_revoked","message":"synthetic-private-provider-text"}}`))}}
 	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}
 	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	tests := service.NewAccountTestService(nil, nil, nil, nil, nil, upstream, cfg, nil)
 	tests.SetOpenAIGatewayService(gateway)
 	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, tests, nil, nil, nil, nil, nil)

@@ -48,7 +48,7 @@ func pr612HTTPHandler(t *testing.T, cfg *config.Config, baseURL, mode string) *O
 	}
 	gateway := service.NewOpenAIGatewayService(openAIImagesFailoverAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, nil, nil,
 		cfg, nil, nil, nil, nil, nil, repository.NewHTTPUpstream(cfg), nil, nil, nil, nil, nil, nil, nil, nil)
-	t.Cleanup(gateway.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gateway)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
 	return NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing,
@@ -140,7 +140,7 @@ func TestPR612WSHTTPBridgeDelayedHeadersNeverReplay(t *testing.T) {
 		Extra:       map[string]any{"openai_apikey_responses_websockets_v2_mode": service.OpenAIWSIngressModeHTTPBridge}}
 	gateway := service.NewOpenAIGatewayService(&openAIWSUsageHandlerAccountRepoStub{account: account}, nil, nil, nil, nil, nil, nil, nil,
 		cfg, nil, nil, nil, nil, nil, repository.NewHTTPUpstream(cfg), nil, nil, nil, nil, nil, nil, nil, nil)
-	t.Cleanup(gateway.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gateway)
 	finished := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, nil)

@@ -135,7 +135,7 @@ func TestRegionalAsyncVideoGrokHandlerLifecycle(t *testing.T) {
 			repo := grokMediaSlotRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}}
 			concurrency := service.NewConcurrencyService(slots)
 			h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
-			t.Cleanup(h.gatewayService.StopOpenAICodexTicketHarvester)
+			ownOpenAIGatewayFixture(t, h.gatewayService)
 
 			create, created := grokMediaSlotContext(t.Context(), true)
 			h.GrokVideoGeneration(create)

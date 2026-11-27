@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,7 +52,7 @@ func TestModerationUpstreamAdminSaveReloadAndAuthorization(t *testing.T) {
 	for _, role := range []string{"", service.RoleUser, service.RoleObserver, service.RoleAdmin} {
 		t.Run(role, func(t *testing.T) {
 			actor := &service.User{ID: 7, Role: role, Status: service.StatusActive}
-			h := NewContentModerationHandler(service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, accounts))
+			h := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, accounts)))
 			router := gin.New()
 			router.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(auth, service.NewUserService(moderationUpstreamUsers{actor: actor}, nil, nil, nil), nil, nil)))
 			router.PUT("/api/v1/admin/risk-control/config", h.UpdateConfig)
@@ -72,7 +73,7 @@ func TestModerationUpstreamAdminSaveReloadAndAuthorization(t *testing.T) {
 			}
 		})
 	}
-	fresh := NewContentModerationHandler(service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, accounts))
+	fresh := NewContentModerationHandler(testutil.OwnContentModeration(t, service.NewContentModerationService(settings, nil, nil, nil, nil, nil, nil, nil, accounts)))
 	router := gin.New()
 	router.GET("/config", fresh.GetConfig)
 	router.PUT("/config", fresh.UpdateConfig)

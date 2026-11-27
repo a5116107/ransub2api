@@ -49,6 +49,7 @@ func TestExcelBPSErrorDoesNotAppendFallback(t *testing.T) {
 				Extra:       map[string]any{"openai_excel_bps": true, "openai_passthrough": true}}
 			repo := excelBPSErrorAccountRepo{account: account}
 			gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, gateway)
 			body := `{"model":"gpt-6-astra","stream":` + map[bool]string{true: "true", false: "false"}[tt.stream] + `,"input":` + tt.input + `}`
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)

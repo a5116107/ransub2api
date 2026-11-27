@@ -45,7 +45,8 @@ func TestPriorityAnalysisHTTPCancellationReachesRepository(t *testing.T) {
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}}
 	settings := service.NewSettingService(&analysisHTTPSettings{}, nil)
 	gateway := service.NewOpenAIGatewayService(&analysisHTTPAccounts{}, nil, history, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil)
-	defer gateway.CloseOpenAIWSPool()
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
 	h := &AccountHandler{openAIGatewayService: gateway}
 	router := gin.New()
 	router.GET("/analysis", func(c *gin.Context) {

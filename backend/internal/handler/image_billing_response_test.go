@@ -170,6 +170,7 @@ func runImageSettlementHTTPWithCount(t *testing.T, contentType, body string, cou
 	pricing := service.NewBillingService(cfg, nil)
 	gateway := service.NewOpenAIGatewayService(accounts, nil, nil, billing, users, nil, nil, nil, cfg,
 		nil, nil, pricing, nil, cache, upstream, nil, nil, nil, service.NewModelPricingResolver(nil, pricing), nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, gateway)
 	h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), cache,
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	rec := httptest.NewRecorder()

@@ -47,8 +47,7 @@ func TestAutoConfigGatewayLargeCompletedStream(t *testing.T) {
 			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(billing.Stop)
 			gateway := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, billing, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
-			t.Cleanup(gateway.StopOpenAICodexTicketHarvester)
-			t.Cleanup(gateway.CloseOpenAIWSPool)
+			ownOpenAIGatewayFixture(t, gateway)
 			h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 			ops := service.NewOpsService(nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 			var got []service.AccountConcurrencyResult

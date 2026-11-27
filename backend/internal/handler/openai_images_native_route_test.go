@@ -84,6 +84,7 @@ func newNativeImageRoute(t *testing.T, delay time.Duration, status int, configur
 	transport := &nativeImageRouteUpstream{target: target, client: upstream.Client()}
 	deferred := service.NewDeferredService(repo, nil, time.Minute)
 	gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, nil, transport, deferred, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, gateway)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billing.Stop)
 	handler := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)

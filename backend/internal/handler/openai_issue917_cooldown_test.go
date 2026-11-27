@@ -86,7 +86,7 @@ func newIssue917Handler(t *testing.T, repo service.AccountRepository, upstream s
 		service.NewBillingService(cfg, nil), service.NewRateLimitService(repo, nil, cfg, nil, nil),
 		billing, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil,
 	)
-	t.Cleanup(gateway.CloseOpenAIWSPool)
+	ownOpenAIGatewayFixture(t, gateway)
 	return NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing,
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 }

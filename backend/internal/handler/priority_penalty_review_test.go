@@ -63,7 +63,7 @@ func TestPriorityPenaltyReviewHandlerFailover(t *testing.T) {
 				return response
 			}, onDo: func(int) { slots.failed = true }}
 			gateway := service.NewOpenAIGatewayService(repo, nil, penaltyModeUsage{}, nil, nil, nil, nil, nil, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, settings, nil)
-			t.Cleanup(func() { _ = gateway.CloseExcelBPSImages() })
+			ownOpenAIGatewayFixture(t, gateway)
 			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(billing.Stop)
 			h := NewOpenAIGatewayHandler(gateway, concurrency, billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)

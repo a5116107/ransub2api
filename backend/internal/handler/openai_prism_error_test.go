@@ -31,6 +31,7 @@ func TestPrismErrorDoesNotAppendFallback(t *testing.T) {
 				account := &service.Account{ID: 300, Status: service.StatusActive, Schedulable: true, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 					Credentials: map[string]any{"access_token": "fixture"}, Extra: map[string]any{"openai_prism_browser": true}}
 				gateway := service.NewOpenAIGatewayService(excelBPSErrorAccountRepo{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				ownOpenAIGatewayFixture(t, gateway)
 				body, err := json.Marshal(map[string]any{"model": "gpt-6.1-sol", "input": "hi", "stream": mode != "json"})
 				require.NoError(t, err)
 				rec := httptest.NewRecorder()
@@ -82,6 +83,7 @@ func TestPrismAdmissionErrorDoesNotAppendFallback(t *testing.T) {
 			account := &service.Account{ID: 300, Status: service.StatusActive, Schedulable: true, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 				Credentials: map[string]any{"access_token": "fixture"}, Extra: map[string]any{"openai_prism_browser": true}}
 			gateway := service.NewOpenAIGatewayService(excelBPSErrorAccountRepo{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, gateway)
 			body, err := json.Marshal(map[string]any{"model": "gpt-6.1-sol", "input": "hi", "stream": mode != "json"})
 			require.NoError(t, err)
 			rec := httptest.NewRecorder()
@@ -136,6 +138,7 @@ func TestPrismUnselectedModelsUseExistingNativeRoute(t *testing.T) {
 				Credentials: map[string]any{"access_token": "fixture"}, Extra: map[string]any{"openai_prism_browser": true,
 					service.PrismBrowserModelsKey: []string{"gpt-6.1-sol"}, "openai_passthrough": true}}
 			gateway := service.NewOpenAIGatewayService(excelBPSErrorAccountRepo{account: account}, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			ownOpenAIGatewayFixture(t, gateway)
 			body, err := json.Marshal(map[string]any{"model": model, "input": "hi"})
 			require.NoError(t, err)
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())

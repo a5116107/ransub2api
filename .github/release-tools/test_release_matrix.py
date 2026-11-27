@@ -298,6 +298,41 @@ class ReleaseMatrixTest(unittest.TestCase):
         self.assertEqual(result['publish'], 'false')
         self.assertEqual(result['image_tag'], 'v9.8.7-ransub.2')
 
+    def test_automatic_plan_skips_go_test_only_changes(self):
+        self.production_history(changed=False)
+        source = Path('backend/internal/handler/fixture_test.go')
+        source.parent.mkdir(parents=True)
+        source.write_text('package handler\n')
+        subprocess.run(['git', 'add', '.'], check=True)
+        subprocess.run(['git', 'commit', '-qm', 'Repair test lifecycle'], check=True)
+        self.assertEqual(self.automatic_plan()['publish'], 'false')
+
+    def test_automatic_plan_publishes_runtime_changes_alongside_go_tests(self):
+        self.production_history(changed=False)
+        source = Path('backend/internal/handler/fixture_test.go')
+        source.parent.mkdir(parents=True)
+        source.write_text('package handler\n')
+        source.with_name('runtime.go').write_text('package handler\n')
+        subprocess.run(['git', 'add', '.'], check=True)
+        subprocess.run(['git', 'commit', '-qm', 'Change runtime and its tests'], check=True)
+        self.assertEqual(self.automatic_plan()['publish'], 'true')
+
+    def test_automatic_plan_keeps_embedded_and_dependency_changes(self):
+        self.production_history(changed=False)
+        for name in ('backend/internal/service/fixture_test.go.json', 'backend/migrations/999_fixture.sql',
+                     'backend/go.sum', 'backend/resources/fixture.json'):
+            with self.subTest(path=name):
+                source = Path(name)
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text('runtime input\n')
+                subprocess.run(['git', 'add', '.'], check=True)
+                subprocess.run(['git', 'commit', '-qm', 'Change application input'], check=True)
+                self.assertEqual(self.automatic_plan()['publish'], 'true')
+                Path('outputs').unlink()
+                source.unlink()
+                subprocess.run(['git', 'add', '.'], check=True)
+                subprocess.run(['git', 'commit', '-qm', 'Restore application input'], check=True)
+
     def test_automatic_plan_reuses_unpublished_tag_at_exact_source(self):
         self.production_history()
         subprocess.run(['git', 'tag', 'v9.8.7-ransub.3'], check=True)

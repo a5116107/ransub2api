@@ -97,6 +97,7 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 	transport := repository.ProvideHTTPUpstream(h.cfg, nil, rdb, nil)
 	concurrency := service.NewConcurrencyService(slots)
 	h.gatewayService = service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, bindings, h.cfg, nil, concurrency, nil, nil, nil, transport, nil, nil, nil, nil, nil, nil, nil, nil)
+	ownOpenAIGatewayFixture(t, h.gatewayService)
 
 	create, created := grokMediaSlotContext(t.Context(), true)
 	h.GrokVideoGeneration(create)
@@ -174,7 +175,6 @@ func TestGrokVideoHandlerSharedKeyLifecycleWithRedis(t *testing.T) {
 	require.EqualValues(t, 1, rdb.ZCard(t.Context(), "concurrency:upstream_key:async_video:release").Val())
 	require.ErrorIs(t, tryCompeting(), service.ErrUpstreamKeyCapacity)
 	h.gatewayService.StartAsyncVideoKeyReleaseRecovery()
-	t.Cleanup(h.gatewayService.StopAsyncVideoKeyReleaseRecovery)
 	require.Eventually(t, func() bool { return tryCompeting() == nil }, 5*time.Second, 50*time.Millisecond,
 		"the background worker must return capacity after a transient terminal release failure")
 	require.EqualValues(t, 2, competing.Load())

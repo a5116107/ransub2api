@@ -81,6 +81,7 @@ func TestOpenAINativeAnthropicEndpointDiagnostics(t *testing.T) {
 						nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream,
 						nil, nil, nil, nil, nil, nil, nil, nil,
 					)
+					ownOpenAIGatewayFixture(t, gateway)
 					account := &service.Account{
 						ID: 9501, Platform: route.platform, Type: service.AccountTypeAPIKey,
 						Credentials: map[string]any{

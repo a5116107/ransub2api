@@ -542,6 +542,7 @@ func TestOpenAIResponsesWebSocketFirstTurnKeyWaitEndsWithoutUpstream(t *testing.
 			cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
 			billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billingCacheSvc.Stop)
 			gatewaySvc := service.NewOpenAIGatewayService(
 				&openAIWSUsageHandlerAccountRepoStub{account: account},
 				nil,
@@ -556,6 +557,7 @@ func TestOpenAIResponsesWebSocketFirstTurnKeyWaitEndsWithoutUpstream(t *testing.
 				&service.DeferredService{},
 				nil, nil, nil, nil, nil, nil, nil,
 			)
+			ownOpenAIGatewayFixture(t, gatewaySvc)
 			h := &OpenAIGatewayHandler{
 				gatewayService:      gatewaySvc,
 				billingCacheService: billingCacheSvc,
@@ -658,6 +660,7 @@ func TestOpenAIResponsesWebSocketFirstTurnCarriesPermissionsToWorker(t *testing.
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		&openAIWSUsageHandlerAccountRepoStub{account: account},
 		nil,
@@ -672,6 +675,7 @@ func TestOpenAIResponsesWebSocketFirstTurnCarriesPermissionsToWorker(t *testing.
 		&service.DeferredService{},
 		nil, nil, nil, nil, nil, nil, nil,
 	)
+	ownOpenAIGatewayFixture(t, gatewaySvc)
 	h := &OpenAIGatewayHandler{
 		gatewayService:      gatewaySvc,
 		billingCacheService: billingCacheSvc,

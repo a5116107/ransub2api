@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -96,7 +97,7 @@ func TestModerationUpstreamHTTPSelectionAndFailover(t *testing.T) {
 					raw, err := json.Marshal(policy)
 					require.NoError(t, err)
 					repo := &contentModerationHandlerSettingRepo{values: map[string]string{service.SettingKeyRiskControlEnabled: "true", service.SettingKeyContentModerationConfig: string(raw)}}
-					h.contentModerationService = service.NewContentModerationService(repo, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, openAIImagesFailoverAccountRepo{accounts: accounts})
+					h.contentModerationService = testutil.OwnContentModeration(t, service.NewContentModerationService(repo, &contentModerationHandlerTestRepo{}, nil, nil, nil, nil, nil, nil, openAIImagesFailoverAccountRepo{accounts: accounts}))
 					c, rec := newOpenAIResponsesFailoverTestContext(t, context.Background())
 					c.Request.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"model":"gpt-5.1","stream":%t,"input":"frozen original input"}`, stream)))
 					h.Responses(c)

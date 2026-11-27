@@ -561,6 +561,14 @@ type ContentModerationService struct {
 	httpClient               *http.Client
 	moderationProxyCache     atomic.Pointer[moderationProxyURLCacheEntry]
 	asyncQueue               chan contentModerationTask
+	asyncQueueMu             sync.RWMutex
+	asyncStopped             atomic.Bool
+	asyncStopOnce            sync.Once
+	asyncStop                chan struct{}
+	asyncDone                chan struct{}
+	asyncCancel              context.CancelFunc
+	cleanupCancel            context.CancelFunc
+	asyncWorkers             sync.WaitGroup
 	workerCount              int
 	configUpdateMu           sync.Mutex
 	apiKeyCursor             atomic.Uint64
@@ -666,6 +674,8 @@ func newContentModerationService(
 		httpClient:           servertiming.InstrumentClient(nil),
 		workerCount:          maxContentModerationWorkerCount,
 		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
+		asyncStop:            make(chan struct{}),
+		asyncDone:            make(chan struct{}),
 		keyHealth:            make(map[string]*contentModerationKeyHealth),
 	}
 	svc.setUpstreamKeyAuthority(cfg, upstream)
@@ -673,12 +683,69 @@ func newContentModerationService(
 		svc.accountRepo = accounts[0]
 	}
 	if settingRepo != nil && repo != nil {
+		workerCtx, cancel := context.WithCancel(context.Background())
+		cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+		svc.asyncCancel, svc.cleanupCancel = cancel, cleanupCancel
 		for i := 0; i < svc.workerCount; i++ {
-			go svc.worker(i)
+			svc.asyncWorkers.Add(1)
+			go func() {
+				defer svc.asyncWorkers.Done()
+				svc.runWorker(workerCtx, i)
+			}()
 		}
-		go svc.cleanupWorker()
+		svc.asyncWorkers.Add(1)
+		go func() {
+			defer svc.asyncWorkers.Done()
+			svc.cleanupWorker(cleanupCtx)
+		}()
 	}
 	return svc
+}
+
+// Stop closes admission before draining queued audit work. A caller deadline
+// cancels active calls; the queue is never closed while a producer can send.
+func (s *ContentModerationService) Stop(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.asyncStopOnce.Do(func() {
+		s.asyncQueueMu.Lock()
+		s.asyncStopped.Store(true)
+		if s.asyncStop != nil {
+			close(s.asyncStop)
+		}
+		if s.asyncQueue != nil {
+			close(s.asyncQueue)
+		}
+		s.asyncQueueMu.Unlock()
+		if s.cleanupCancel != nil {
+			s.cleanupCancel()
+		}
+		if s.asyncDone == nil {
+			s.asyncDone = make(chan struct{})
+		}
+		go func() {
+			s.asyncWorkers.Wait()
+			if s.asyncCancel != nil {
+				s.asyncCancel()
+			}
+			close(s.asyncDone)
+		}()
+	})
+	select {
+	case <-s.asyncDone:
+		return nil
+	default:
+	}
+	select {
+	case <-s.asyncDone:
+		return nil
+	case <-ctx.Done():
+		if s.asyncCancel != nil {
+			s.asyncCancel()
+		}
+		return ctx.Err()
+	}
 }
 
 func (s *ContentModerationService) GetConfig(ctx context.Context) (*ContentModerationConfigView, error) {
@@ -1332,6 +1399,12 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	if s == nil || s.asyncQueue == nil {
 		return
 	}
+	s.asyncQueueMu.RLock()
+	defer s.asyncQueueMu.RUnlock()
+	if s.asyncStopped.Load() {
+		s.asyncDropped.Add(1)
+		return
+	}
 	queueSize := defaultContentModerationQueueSize
 	if cfg != nil && cfg.QueueSize > 0 {
 		queueSize = cfg.QueueSize
@@ -1358,6 +1431,12 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 
 func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInput, cfg *ContentModerationConfig, log *ContentModerationLog, inputHash string, recordHash bool, applySideEffects bool) {
 	if s == nil || s.asyncQueue == nil || log == nil {
+		return
+	}
+	s.asyncQueueMu.RLock()
+	defer s.asyncQueueMu.RUnlock()
+	if s.asyncStopped.Load() {
+		s.asyncDropped.Add(1)
 		return
 	}
 	queueSize := defaultContentModerationQueueSize
@@ -1394,18 +1473,22 @@ func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInp
 	}
 }
 
-func (s *ContentModerationService) worker(id int) {
-	s.runWorker(context.Background(), id)
-}
-
 func (s *ContentModerationService) runWorker(workerCtx context.Context, id int) {
 	for s.waitForAsyncWork(workerCtx) {
 		ctx, cancel := context.WithTimeout(workerCtx, maxContentModerationTimeoutMS*time.Millisecond+10*time.Second)
 		runtimeSnapshot, err := s.loadRuntimeSnapshot(ctx)
 		if err != nil || runtimeSnapshot == nil || runtimeSnapshot.config == nil || id >= runtimeSnapshot.config.WorkerCount {
 			cancel()
+			var shutdown <-chan struct{}
+			if err == nil && runtimeSnapshot != nil && runtimeSnapshot.config != nil {
+				// Inactive workers own no task. Only config failures retain
+				// their retry delay so shutdown cannot silently drop the queue.
+				shutdown = s.asyncStop
+			}
 			select {
 			case <-workerCtx.Done():
+				return
+			case <-shutdown:
 				return
 			case <-time.After(time.Second):
 			}
@@ -1470,12 +1553,17 @@ func (s *ContentModerationService) waitForAsyncWork(ctx context.Context) bool {
 	if len(s.asyncQueue) > 0 {
 		return true
 	}
+	if s.asyncStopped.Load() {
+		return false
+	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return false
+		case <-s.asyncStop:
+			return len(s.asyncQueue) > 0
 		case <-ticker.C:
 			if len(s.asyncQueue) > 0 {
 				return true
@@ -1644,21 +1732,25 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 	}, nil
 }
 
-func (s *ContentModerationService) cleanupWorker() {
+func (s *ContentModerationService) cleanupWorker(ctx context.Context) {
 	timer := time.NewTimer(contentModerationCleanupDelay)
 	defer timer.Stop()
 	for {
-		<-timer.C
-		s.runCleanupOnce()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		s.runCleanupOnce(ctx)
 		timer.Reset(contentModerationCleanupInterval)
 	}
 }
 
-func (s *ContentModerationService) runCleanupOnce() {
+func (s *ContentModerationService) runCleanupOnce(parent context.Context) {
 	if s == nil || s.repo == nil || s.settingRepo == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), contentModerationCleanupTimeout)
+	ctx, cancel := context.WithTimeout(parent, contentModerationCleanupTimeout)
 	defer cancel()
 	cfg, err := s.loadConfig(ctx)
 	if err != nil {
