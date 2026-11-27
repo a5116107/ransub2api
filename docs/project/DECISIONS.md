@@ -2981,3 +2981,10 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 
 - 修正纯预览路由白名单后，实际public-smoke最终exit0/passed=true：公网current=latest=.7/has_update=false，实际程序023bac6f，16账号/3组/2Key/499迁移。后台中英1440/390原总览、编辑预填、工具计划预算、历史入口、失败恢复及新API Key多分组开关均通过；开关仅浏览器本地false→true，未保存，管理/公开API当前true，pageerror/HTTP错误/配置写入0。实际生产图片r16-multigroup-zh-390.png人工查看内容清晰/无裁切。原18183样本仍真实“请求错误”、整轮inconclusive，不改成通过，待执行轮本时段未出现，仅记录未观测。
 - 正例SSE request/probe ransub-production-smoke-10583437-8935-4d7f-a8fa-05f9622754f1、client eba677ae-de17-4d90-aed7-fcbfd4369d36，3.797s（含网络、非纯模型TTFT），唯一response.completed、正文非空；usage143809/账号14/gpt-6.1-sol/input53/output5，usage/claim/quote各1、legacy event0、canonical/wallet debit归属一致。业务负例0/生产规则更改0；不据此推广全部Mac/BPS旧长会话、未知文件/加密历史、区域或供应池恢复。R1.6及Gemini D9.5明确范围done，原28项20done/8部分不变，D8.5旧版对仍部分，工作流active/公开发行/线上.7已分别核验。
+
+### 2026-11-27 M14：生产镜像保留与根盘阻塞解除
+
+- 接续前先发现唯一工作树已交付PR13/.7且仍有并行首页未提交修改，本轮不重复已验证的D8.5同修复版取消验收，也不夹带首页。生产.7程序023bac6f与已发布源9649a255c匹配；6个现有容器健康。根盘仅701157376B/99%，新制品/日志存在真实容量风险，优先执行原授权镜像维护；不对受保护Windows产物绕行重试。
+- 先只读docker image/container与本机回滚程序盘点，再固定仅9个无运行/停止容器引用的旧Sub2API镜像，保留当前.7/fe034061与.6回滚/12127b77。逐个删除前再次核对不可变ID/全部标签/所有容器引用，不force、不prune、不动其他项目镜像/volume/数据库/配置/历史备份；线上sub2api.backup的.6 SHA dfccbb39核对前后一致，所有6个容器ID与镜像身份相同，未重启。
+- 9个镜像实际删除、docker images19→10，总显示12.08GB→3.439GB；statvfs可用空间698126336→9336262656B，观察净增8638136320B（8.04GiB），可用8.70GiB。共享层逻辑大小未逐项相加冒充净回收；健康HTTP200、rollback_preserved=true。证据在既有quality-evidence/release-retention-{inventory,cleanup}.json及cleanup.log，M14明确范围done，原28项20done/8部分保持。
+- 官方随后发布v2.25.5/91aa59645，较已集成be1d8306新增明确上下文超限/SLA排除与401默认false列，不删历史；R1.7按已有同步发布授权继续，同一PR保留自研边界。只读merge-tree预览3冲突（退役workflow、VERSION、使用量测试字段）待处理。用户新idle SSE截图接续直接生产日志关联，不先假设客户端/上游或混同此前400；根盘解除不等于该截图故障已修复。
