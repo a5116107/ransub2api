@@ -107,6 +107,41 @@ own evidence. In particular, a `2.21.0-ransub.9` writer drops the newer
 `cache_weight` field; drain and retire that writer before managing newer policy.
 An old-client save through a new server is not proof that an old binary is safe.
 
+### Optional two-version Responses HTTP request check
+
+Add `--overlap-requests` to that same command; it can be combined with
+`--overlap-config`. It starts an isolated upstream on the internal network and
+uses the verified baseline and candidate binaries against the fixture's shared
+PostgreSQL and Redis. No real supplier is contacted and no port is published.
+The two synthetic accounts explicitly select native Responses, avoiding an
+unrelated automatic capability probe changing the protocol under test.
+
+Two accounts in different product groups share one upstream Key with a total
+ceiling of **1**, while retaining their individual ceilings of 2. Both directions
+(baseline holding capacity / candidate requesting it, and the reverse) must
+return the specific local admission 503 without another physical upstream call.
+After completion, the other node must recover. Successful streams must have one
+complete terminal and exactly one usage, billing claim and quote, attributed to
+the original account, product group and fixed selling rate. The synthetic rates
+0.12 and 0.15 are fixture examples, not supplier procurement prices.
+
+HTTP client cancellation does **not** prove that upstream generation stopped:
+the existing service drains upstream for final usage. In both directions the
+check therefore requires capacity to remain occupied while that call is active,
+with no replay. Only after the upstream terminal may capacity return; the drained
+call must settle once and another request must succeed. Rejected requests must
+create no usage, claim or quote. A mismatch remains a failed result, not a skipped
+or relaxed assertion. Startup acknowledgement and failure logs always address
+the particular node being started, not whichever node is currently primary.
+
+`request_overlap.status=compatible` covers only
+`responses_http_shared_key_capacity_cancellation_and_settlement` for that exact
+binary pair. `mixed_version_isolation_verified` stays **false**: WebSocket,
+regional ownership, background jobs, other non-text capabilities and supplier
+cache lifetime remain separate observations. The normal drained upgrade,
+rollback, re-upgrade and captured-ID cleanup still run. This check does not
+authorize mixed-version production traffic or change the production rollout.
+
 ### Explicit two-turn tool verification
 
 `local-tool-smoke` verifies the first approved non-text scenario: Responses

@@ -85,6 +85,24 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.preflight()
         create.assert_not_called()
 
+    def test_request_overlap_preserves_existing_peer_and_upstream(self):
+        self.args.overlap_requests = True
+        run = rehearsal.Rehearsal(self.args)
+        for suffix in ('peer', 'upstream'):
+            with self.subTest(suffix=suffix):
+                def inspect(*args, **kwargs):
+                    if args[:2] == ('context', 'inspect'):
+                        return subprocess.CompletedProcess([], 0, 'unix:///var/run/docker.sock', '')
+                    if args[:2] == ('image', 'inspect'):
+                        return subprocess.CompletedProcess([], 0, '', '')
+                    return subprocess.CompletedProcess([], 0 if args[-1] == run.prefix + '-' + suffix else 1,
+                                                       '', 'No such object')
+                with patch.dict(os.environ, {'DOCKER_HOST': ''}), patch.object(run, 'docker', side_effect=inspect), \
+                        patch.object(run, 'create') as create:
+                    with self.assertRaisesRegex(RuntimeError, 'owner recovery.*' + suffix):
+                        run.preflight()
+                create.assert_not_called()
+
     def test_cleanup_preserves_resource_with_different_owner(self):
         run = rehearsal.Rehearsal(self.args)
         run.resources = [('container', 'c' * 64)]
@@ -234,6 +252,144 @@ class ReleaseRehearsalTest(unittest.TestCase):
                 run.start_app(Path(self.args.candidate), 'candidate')
         self.assertEqual(api.call_count, 1)
         self.assertEqual(run.result['stages'], [])
+
+    def test_peer_onboarding_acknowledges_peer_not_primary(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        run.result['baseline_binary_sha256'] = 'baseline-digest'
+        replies = [{'status': 'ok'}, {'access_token': 'synthetic-token'},
+                   {'required': True, 'ack_phrase_en': 'fixture-phrase'}, {'required': False}]
+        with patch.object(run, 'create', return_value='d' * 64), \
+                patch.object(run, 'api', side_effect=replies) as api, \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'baseline-digest', '')):
+            run.start_app(run.baseline, 'baseline_overlap', name='peer')
+        self.assertTrue(all(call.kwargs.get('app') == 'd' * 64 for call in api.call_args_list))
+        self.assertEqual(run.app, 'c' * 64)
+
+    def test_peer_startup_failure_reads_peer_logs_and_retains_identity(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        def docker(*args, **kwargs):
+            if args[0] == 'inspect':
+                return subprocess.CompletedProcess([], 0, 'false', '')
+            return subprocess.CompletedProcess([], 0, run.password + ' peer-failure', '')
+        with patch.object(run, 'create', return_value='d' * 64), \
+                patch.object(run, 'api', side_effect=RuntimeError('not started')), \
+                patch.object(run, 'docker', side_effect=docker) as calls:
+            with self.assertRaisesRegex(RuntimeError, 'startup failed at baseline_overlap'):
+                run.start_app(run.baseline, 'baseline_overlap', name='peer')
+        logs = [call for call in calls.call_args_list if call.args[0] == 'logs']
+        self.assertEqual(logs[0].args[-1], 'd' * 64)
+        self.assertNotIn(run.password, run.result['startup_log'])
+        self.assertEqual(run.app, 'c' * 64)
+
+    def test_request_overlap_configures_same_ceiling_without_changing_default_start(self):
+        self.args.overlap_requests = True
+        run = rehearsal.Rehearsal(self.args)
+        run.result['candidate_binary_sha256'] = 'fixture-digest'
+        with patch.object(run, 'create', return_value='c' * 64) as create, \
+                patch.object(run, 'api', side_effect=[{'status':'ok'}, {'access_token':'fixture'}, {'required':False}]), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, 'fixture-digest', '')):
+            run.start_app(Path(self.args.candidate), 'candidate')
+        args = create.call_args.args
+        self.assertIn('CONFIG_FILE=/app/data/rehearsal.yaml', args)
+        self.assertIn('upstream_key_concurrency', args[-1])
+        self.assertNotIn(rehearsal.MIXED_KEY, args[-1])
+        self.assertTrue(args[-1].endswith("os.execv('/rehearsal-bin',['/rehearsal-bin'])"))
+        self.assertFalse(run.result['mixed_version_isolation_verified'])
+
+    def test_stream_credentials_are_stdin_only_and_request_identity_is_distinct(self):
+        run = rehearsal.Rehearsal(self.args)
+        with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, '{"status":503}', '')) as docker:
+            self.assertEqual(run.stream_request('c' * 64, 'synthetic-key', 'case-id'), {'status':503})
+        self.assertNotIn('synthetic-key', repr(docker.call_args.args))
+        self.assertEqual(json.loads(docker.call_args.kwargs['input']),
+                         {'key':'synthetic-key','case':'case-id','cancel':False})
+
+    def test_stream_client_observes_terminal_and_cancellation_without_echoing_credentials(self):
+        from unittest.mock import MagicMock
+        events = [b'data: {"type":"response.output_text.delta","delta":"fixture OK"}\n',
+                  b'data: {"type":"response.completed"}\n']
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.status, response.headers = 200, {'x-client-request-id':'fixture-id'}
+                response.__iter__.return_value = iter(events)
+                stdout = io.StringIO()
+                with patch('sys.stdin', io.StringIO(json.dumps({'key':'synthetic-sensitive-key','case':'fixture','cancel':cancel}))), \
+                        patch('sys.stdout', stdout), patch('urllib.request.build_opener') as opener:
+                    opener.return_value.open.return_value = response
+                    exec(rehearsal.STREAM_CLIENT, {})
+                observed = json.loads(stdout.getvalue())
+                self.assertEqual(observed['cancelled'], cancel)
+                self.assertEqual(observed['completed'], 0 if cancel else 1)
+                self.assertEqual(observed['deltas'], 1)
+                self.assertNotIn('synthetic-sensitive-key', stdout.getvalue())
+                self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 15)
+                response.__exit__.assert_called_once()
+
+    def test_stream_client_retains_typed_admission_error_not_private_body(self):
+        from urllib.error import HTTPError
+        body = json.dumps({'error':{'code':'upstream_key_admission_unavailable','message':'sensitive-body'}}).encode()
+        error = HTTPError('http://127.0.0.1:8080/v1/responses',503,'unavailable',
+                          {'x-client-request-id':'fixture-id'},io.BytesIO(body))
+        stdout = io.StringIO()
+        with patch('sys.stdin', io.StringIO(json.dumps({'key':'synthetic-key','case':'fixture'}))), \
+                patch('sys.stdout', stdout), patch('urllib.request.build_opener') as opener:
+            opener.return_value.open.side_effect = error
+            exec(rehearsal.STREAM_CLIENT, {})
+        observed = json.loads(stdout.getvalue())
+        self.assertEqual(observed['status'], 503)
+        self.assertEqual(observed['error_code'], 'upstream_key_admission_unavailable')
+        self.assertEqual(observed['client_request_id'], 'fixture-id')
+        self.assertNotIn('sensitive-body', stdout.getvalue())
+
+    def test_missing_slot_observation_fails_with_bounded_nonsecret_state(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.redis = 'redis'
+        with patch.object(run, 'fixture_api', return_value={'active':0,'calls':0}), \
+                patch.object(run, 'docker', return_value=subprocess.CompletedProcess([],0,'0','')), \
+                patch.object(rehearsal.time, 'monotonic', side_effect=[0,16]):
+            with self.assertRaisesRegex(RuntimeError, 'state did not converge.*expected_slots'):
+                run.wait_request_state(active=1,slots=1,calls=1)
+
+    def test_settlement_rejects_bad_stream_before_sql(self):
+        run = rehearsal.Rehearsal(self.args)
+        good = {'status':200,'completed':1,'deltas':1,'errors':0,'cancelled':False,'client_request_id':'valid-id'}
+        for field, value in [('status',503),('completed',0),('completed',2),('deltas',0),('errors',1),('cancelled',True),
+                             ('client_request_id',"invalid' SQL")]:
+            with self.subTest(field=field,value=value), patch.object(run, 'sql') as sql:
+                with self.assertRaises(RuntimeError):
+                    run.verify_stream_settlement(dict(good, **{field:value}), 3, 4, .12)
+                sql.assert_not_called()
+
+    def test_settlement_checks_unique_rows_price_and_debit_owner(self):
+        run = rehearsal.Rehearsal(self.args)
+        response = {'status':200,'completed':1,'deltas':1,'errors':0,'cancelled':False,'client_request_id':'valid-id'}
+        observed = {'usage':1,'claims':1,'quotes':1,'account':3,'group':4,'rate':.12,
+                    'canonical_matches':True,'debit_matches':True}
+        with patch.object(run, 'sql', return_value=json.dumps(observed)):
+            self.assertEqual(run.verify_stream_settlement(response, 3, 4, .12), observed)
+        for field,value in [('usage',2),('claims',2),('quotes',2),('account',9),('group',9),('rate',.15),
+                            ('canonical_matches',False),('debit_matches',False)]:
+            with self.subTest(field=field), patch.object(run, 'sql', return_value=json.dumps(dict(observed, **{field:value}))):
+                with self.assertRaises(RuntimeError):
+                    run.verify_stream_settlement(response, 3, 4, .12)
+
+    def test_request_overlap_failure_never_claims_full_mixed_compatibility_and_stops_peer(self):
+        run = rehearsal.Rehearsal(self.args)
+        run.app = 'c' * 64
+        run.db, run.redis, run.upstream = 'db', 'redis', 'upstream'
+        def start(*args, **kwargs):
+            run.result['stages'].append({'container_id':'d' * 64})
+        with patch.object(run, 'start_app', side_effect=start), patch.object(run, 'docker',
+                return_value=subprocess.CompletedProcess([], 0, 'false', '')), patch.object(run, 'stop_app') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'both mixed-request instances'):
+                run.exercise_request_overlap('synthetic-token')
+        stop.assert_called_once_with('d' * 64)
+        self.assertEqual(run.result['request_overlap']['status'], 'failed')
+        self.assertFalse(run.result['mixed_version_isolation_verified'])
 
     def test_docker_timeout_does_not_echo_command_credentials(self):
         run = rehearsal.Rehearsal(self.args)

@@ -2850,3 +2850,13 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 一次真实gpt-6.1-sol SSE完整终态1、正文正常，耗时1.953秒含本机网络（非纯上游TTFT），client55904f87-4a40-4e97-872b-1c10b9cd44cd，usage140726/上游9、输入53/输出5；关联usage1/claim1/quote1/旧event0，canonical实际费和wallet_debit/付款人一致。该样本不是长期SLA、模型身份、缓存域或旧Mac/BPS全面恢复证明。
 - 先dry-run再复核SHA及/proc/容器挂载0引用，删除服务器候选170922144B及cutover字段37135B，共170959279逻辑字节；rollback_preserved=true/health=ok，保留.3程序、镜像、数据库、数据、配置和诊断归档。不将逻辑删除量冒称全盘空间释放；本地受保护scratch不重试。所有原外部等待及轮换凭据输入保持。
 - M2.1本项验收完整关闭，R1当前版本更新.4；原28项20done/8部分不因子任务或发布而改总数。D2/D4待供应商请求关联/模型fast来源契约，D5/D6及依赖解释待可信缓存域/TTL/前缀与净收益，D3其他能力/插件计量和D8/D9完整混版/旧会话仍待原条件。验收后续仅更新文档的提交不改变上述不可变构建源。
+
+
+### 2026-11-27 D8.3：双版HTTP容量、取消排空与唯一结算
+
+- 原位扩展local-rehearse的--overlap-requests，可与--overlap-config组合，不增加业务实现或生产开关。先以两个真实红例复现peer入站确认误发primary、peer启动失败误取primary日志；修复后Win/Linux各31项工具测试通过（0.186/0.444s），ruff E9/F63/F7/F82与diff检查0。保留原手动入口、独立节点身份、内部网络和按ID回收。
+- 首次本机运行配置控制面通过，请求持槽未收敛，原失败保留。随后Docker后端管道消失，start误报已运行；restart在120秒停止阶段超时，未强杀全局进程或清理其他项目。复用hk2已有python3.11/PG18/Redis8与已验证.3/.4归档，独立内部网络/新鲜tmpfs数据库，不读生产数据/凭据、不发布端口、不拉镜像、不访问供应商。远程包装器先后补齐字符串转义、GoReleaser配置及CLI的openai_tool_roundtrip导入，仅为本次封装依赖，不冒称业务缺陷修复。
+- 第二个有鉴别力的失败：账号创建自动能力探测与只实现Responses流式的mock混在一起，实际请求502；按本子项明确范围将两个合成账号显式force_responses并使用/v1，避免把探测结论当测试预设。后续双向容量及4次唯一结算通过，取消阶段原断言15秒未归零失败；源码detachUpstreamContext和既有测试明确下游断开后继续读取上游usage。保留失败并纠正验收假设，未改变生产的读取/取消/计费行为。
+- 匹配最终工具SHA的函数路径通过后，再用实际release_matrix.py local-rehearse CLI重复验证，最终entrypoint_exit=0/passed=true。.3源55a8388f3、程序31db69bd708b；.4源5e220a84a、程序9573785eed2a；两真实进程共享隔离SQL/Redis。两账号各并发2、不同分组售价0.12/0.15（纯夹具示例），同一实际Key总额1。两方向满额各返回明确upstream_key_admission_unavailable/503且零物理发送；释放后另一节点恢复。6个完整终态、2个下游取消但继续排空的真实上游调用均usage1/claim1/quote1，账号/分组/售价/canonical费用/付款人保持。取消时上游仍活跃则Key继续持有，另节点拒绝；实际终态后精确归还，不重放。4个拒绝均usage/claim/quote0，峰值物理并发1。
+- 两轮成功的串行升级/回退/重升和管理并发仍通过，原迁移checksum/凭据/售价/暂停监测保持。新鲜副本495迁移不冒称生产499迁移恢复；production_changed=false。每轮10个容器/网络全回收，候选程序及baseline解包文件退出后移除。保留mixed_version_isolation_verified=false，只关闭D8.3明确HTTP范围，不关闭WS/区域/后台任务/其他非文本/缓存与供应商/旧长会话父验收。证据沿mixed-requests-{unit,linux-unit,remote}，最初失败、取消假设失败和函数路径证据分别保留，不用旧JSON的passed替代失败CLI退出码。
+- 新发现官方production在稳定tag v2.25.4之后合入becb95d40并发未知显示修复，符合原unknown规则；接续R1.4整合与同源维护发布，不将未回归的生产分支tip当已上线版本。原28项20done/8部分保持。

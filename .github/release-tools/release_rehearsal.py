@@ -1,6 +1,7 @@
 """Exercise a drained binary upgrade and rollback using disposable local data."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,89 @@ except (URLError,TimeoutError,ConnectionError):
     result={'status':0}
 print(json.dumps(result))
 '''
+
+# This upstream lives on the rehearsal's internal network. It emits no model
+# claims and never forwards a request outside the fixture.
+REQUEST_UPSTREAM = r'''import json,threading,time
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+lock=threading.Lock()
+gate=threading.Event();gate.set()
+state={'active':0,'peak':0,'calls':0,'hold_next':False}
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self,*args):pass
+    def reply(self,body):
+        data=json.dumps(body).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+    def do_GET(self):
+        with lock:self.reply(dict(state))
+    def do_POST(self):
+        size=int(self.headers.get('Content-Length','0'))
+        body=json.loads(self.rfile.read(size) or b'{}')
+        if self.path=='/arm':
+            with lock:
+                if state['active']:self.send_error(409);return
+                state['hold_next']=True;gate.clear()
+            self.reply({'armed':True});return
+        if self.path=='/release':
+            gate.set();self.reply({'released':True});return
+        if self.path!='/v1/responses':self.send_error(404);return
+        with lock:
+            state['active']+=1;state['calls']+=1
+            state['peak']=max(state['peak'],state['active'])
+            hold=state['hold_next'];state['hold_next']=False
+            number=state['calls']
+        try:
+            self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+            def emit(event):
+                self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode());self.wfile.flush()
+            rid='resp_rehearsal_'+str(number)
+            emit({'type':'response.created','response':{'id':rid,'status':'in_progress'}})
+            emit({'type':'response.output_text.delta','delta':'fixture OK'})
+            deadline=time.monotonic()+30
+            while hold and not gate.wait(.1):
+                if time.monotonic()>=deadline:raise TimeoutError('fixture release deadline')
+                self.wfile.write(b': fixture heartbeat\n\n');self.wfile.flush()
+            emit({'type':'response.completed','response':{'id':rid,'status':'completed','model':body['model'],
+                  'output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'fixture OK'}]}],
+                  'usage':{'input_tokens':16,'output_tokens':4}}})
+        except (BrokenPipeError,ConnectionResetError,TimeoutError):pass
+        finally:
+            with lock:state['active']-=1
+ThreadingHTTPServer(('0.0.0.0',8787),Handler).serve_forever()
+'''
+
+STREAM_CLIENT = r'''import json,sys
+from urllib.request import Request,ProxyHandler,build_opener
+from urllib.error import HTTPError,URLError
+p=json.load(sys.stdin)
+headers={'Content-Type':'application/json','Authorization':'Bearer '+p['key'],
+         'session_id':p['case'],'X-Request-ID':p['case']}
+request=Request('http://127.0.0.1:8080/v1/responses',headers=headers,
+                data=json.dumps({'model':'gpt-6.1-sol','input':p['case'],'stream':True,
+                                 'store':False,'max_output_tokens':32}).encode())
+result={'status':0,'completed':0,'deltas':0,'errors':0,'cancelled':False,'client_request_id':'','error_code':''}
+try:
+    with build_opener(ProxyHandler({})).open(request,timeout=15) as response:
+        result.update(status=response.status,client_request_id=response.headers.get('x-client-request-id',''))
+        for line in response:
+            if not line.startswith(b'data:'):continue
+            event=json.loads(line[5:]);kind=event.get('type')
+            if kind=='response.completed':result['completed']+=1
+            if kind in ('response.failed','response.incomplete','error'):result['errors']+=1
+            if kind=='response.output_text.delta' and event.get('delta'):
+                result['deltas']+=1
+                if p.get('cancel'):
+                    result['cancelled']=True;break
+except HTTPError as error:
+    result.update(status=error.code,client_request_id=error.headers.get('x-client-request-id',''))
+    try:result['error_code']=json.loads(error.read(65536)).get('error',{}).get('code','')
+    except (ValueError,AttributeError):pass
+except (URLError,TimeoutError,ConnectionError):result['status']=0
+print(json.dumps(result))
+'''
+
+MIXED_KEY = 'synthetic-rehearsal-shared-upstream-key'
 
 
 def require(condition, message):
@@ -74,8 +158,10 @@ class Rehearsal:
         for image in (self.args.runtime_image, self.args.postgres_image, self.args.redis_image):
             self.docker('image', 'inspect', image)
         names = [self.prefix, self.prefix + '-db', self.prefix + '-redis', self.prefix + '-app']
-        if getattr(self.args, 'overlap_config', False):
+        if getattr(self.args, 'overlap_config', False) or getattr(self.args, 'overlap_requests', False):
             names.append(self.prefix + '-peer')
+        if getattr(self.args, 'overlap_requests', False):
+            names.append(self.prefix + '-upstream')
         for name in names:
             kind = 'network' if name == self.prefix else 'container'
             require(self.docker(kind, 'inspect', name, check=False).returncode != 0,
@@ -145,11 +231,19 @@ class Rehearsal:
                'ADMIN_EMAIL': 'rehearsal@example.invalid', 'ADMIN_PASSWORD': self.password,
                'JWT_SECRET': self.jwt, 'SERVER_HOST': '0.0.0.0', 'SERVER_PORT': '8080',
                'SERVER_MODE': 'release', 'RUN_MODE': 'standard', 'DATA_DIR': '/app/data', 'TZ': 'UTC'}
+        command = ['/rehearsal-bin']
+        if getattr(self.args, 'overlap_requests', False):
+            policy = {'gateway': {'upstream_key_concurrency': {'revision': 1, 'limits': {
+                hashlib.sha256(MIXED_KEY.encode()).hexdigest(): 1}}}}
+            env['CONFIG_FILE'] = '/app/data/rehearsal.yaml'
+            launcher = ("import os,pathlib;pathlib.Path('/app/data/rehearsal.yaml').write_text("
+                        + repr(json.dumps(policy)) + ");os.execv('/rehearsal-bin',['/rehearsal-bin'])")
+            command = ['python', '-c', launcher]
         flags = [part for key, value in env.items() for part in ('--env', key + '=' + value)]
         app = self.create('container', '--name', self.prefix + '-' + name, '--network', self.prefix,
                                '--tmpfs', '/app/data', '--workdir', '/app',
                                '--mount', f'type=bind,source={binary},target=/rehearsal-bin,readonly',
-                               *flags, self.args.runtime_image, '/rehearsal-bin')
+                               *flags, self.args.runtime_image, *command)
         if name == "app":
             self.app = app
         deadline = time.monotonic() + 120
@@ -160,7 +254,7 @@ class Rehearsal:
             except (RuntimeError, TimeoutError, ConnectionError):
                 state = self.docker('inspect', '--format', '{{.State.Running}}', app).stdout.strip()
                 if state != 'true' or time.monotonic() >= deadline:
-                    log = self.docker('logs', '--tail', '12', self.app, check=False)
+                    log = self.docker('logs', '--tail', '12', app, check=False)
                     message = (log.stdout + log.stderr)[-3000:]
                     for secret in (self.password, self.jwt):
                         message = message.replace(secret, '[redacted]')
@@ -177,7 +271,7 @@ class Rehearsal:
         compliance = self.api('GET', '/api/v1/admin/compliance', token=token, app=app)
         if compliance['required']:
             compliance = self.api('POST', '/api/v1/admin/compliance/accept', {
-                'language': 'en', 'phrase': compliance['ack_phrase_en']}, token)
+                'language': 'en', 'phrase': compliance['ack_phrase_en']}, token, app=app)
         require(compliance['required'] is False, 'local fixture onboarding did not complete')
         self.result['stages'].append({'stage': stage, 'health': True, 'login': True,
                                      'fixture_onboarding': True, 'container_id': app, 'loaded_sha256': loaded})
@@ -253,6 +347,169 @@ class Rehearsal:
             if peer is not None:
                 self.stop_app(peer)
 
+    def fixture_api(self, path, body=None):
+        client = HTTP_CLIENT.replace('127.0.0.1:8080', '127.0.0.1:8787')
+        reply = self.docker('exec', '-i', self.upstream, 'python', '-c', client,
+                            input=json.dumps({'method': 'GET' if body is None else 'POST',
+                                              'path': path, 'headers': {'Content-Type': 'application/json'}, 'body': body}))
+        response = json.loads(reply.stdout)
+        require(response['status'] == 200, 'isolated upstream control failed at ' + path)
+        return response['data']
+
+    def stream_request(self, node, key, case, *, cancel=False):
+        reply = self.docker('exec', '-i', node, 'python', '-c', STREAM_CLIENT,
+                            input=json.dumps({'key': key, 'case': case, 'cancel': cancel}))
+        return json.loads(reply.stdout)
+
+    def wait_request_state(self, *, active, slots, calls=None):
+        fingerprint = hashlib.sha256(MIXED_KEY.encode()).hexdigest()
+        deadline = time.monotonic() + 15
+        while True:
+            state = self.fixture_api('/stats')
+            held = int(self.docker('exec', self.redis, 'redis-cli', '--raw', 'ZCARD',
+                                  'concurrency:upstream_key:slots:' + fingerprint).stdout.strip())
+            if state['active'] == active and held == slots and (calls is None or state['calls'] == calls):
+                return state
+            require(time.monotonic() < deadline, 'mixed request/slot state did not converge: '
+                    + json.dumps({'active': state['active'], 'slots': held, 'calls': state['calls'],
+                                  'expected_active': active, 'expected_slots': slots, 'expected_calls': calls}))
+            time.sleep(.1)
+
+    def verify_stream_settlement(self, response, account, group, multiplier):
+        require(response['status'] == 200 and response['completed'] == 1 and response['deltas'] > 0
+                and response['errors'] == 0 and not response['cancelled'], 'mixed stream did not complete exactly once')
+        return self.verify_request_settlement(response['client_request_id'], account, group, multiplier)
+
+    def verify_request_settlement(self, request_id, account, group, multiplier):
+        require(re.fullmatch(r'[A-Za-z0-9_-]{1,255}', request_id), 'invalid mixed-stream request identity')
+        query = f"""SELECT jsonb_build_object('usage',count(*),'account',min(u.account_id),'group',min(u.group_id),
+            'rate',min(u.rate_multiplier),
+            'claims',(SELECT count(*) FROM usage_billing_dedup WHERE request_id='client:{request_id}'),
+            'quotes',(SELECT count(*) FROM usage_billing_quotes WHERE request_id='client:{request_id}'),
+            'canonical_matches',bool_and(q.canonical_actual_cost=u.actual_cost),
+            'debit_matches',bool_and(q.wallet_debit=u.actual_cost AND q.debited_user_id=u.user_id))
+            FROM usage_logs u LEFT JOIN usage_billing_quotes q
+            ON q.request_id=u.request_id AND q.api_key_id=u.api_key_id WHERE u.request_id='client:{request_id}'"""
+        deadline = time.monotonic() + 15
+        while True:
+            observed = json.loads(self.sql(query))
+            if observed['usage']:
+                break
+            require(time.monotonic() < deadline, 'mixed stream usage was not persisted')
+            time.sleep(.1)
+        require(observed['usage'] == observed['claims'] == observed['quotes'] == 1,
+                'mixed stream usage/claim/quote was not unique')
+        require(observed['account'] == account and observed['group'] == group
+                and observed['rate'] == multiplier, 'mixed stream changed account/group or selling rate')
+        require(observed['canonical_matches'] and observed['debit_matches'], 'mixed stream debit attribution mismatch')
+        return observed
+
+    def exercise_request_overlap(self, token):
+        overlap = {'scope': 'responses_http_shared_key_capacity_cancellation_and_settlement', 'status': 'running',
+                   'candidate_node': self.app, 'database_container': self.db, 'redis_container': self.redis,
+                   'upstream_container': self.upstream, 'shared_key_limit': 1, 'cases': []}
+        self.result['request_overlap'] = overlap
+        peer = None
+        try:
+            self.start_app(self.baseline, 'baseline_requests', name='peer')
+            peer = self.result['stages'][-1]['container_id']
+            overlap['baseline_node'] = peer
+            require(peer != self.app, 'request overlap needs independent application instances')
+            for node in (peer, self.app):
+                require(self.docker('inspect', '--format', '{{.State.Running}}', node).stdout.strip() == 'true',
+                        'both mixed-request instances must be running')
+            self.sql("UPDATE users SET balance=100, concurrency=16 WHERE email='rehearsal@example.invalid'")
+            accounts, groups, keys, rates = [], [], [], [.12, .15]
+            for index, rate in enumerate(rates):
+                group = self.api('POST', '/api/v1/admin/groups', {'name': 'mixed-requests-' + str(index),
+                                 'platform': 'openai', 'rate_multiplier': rate, 'subscription_type': 'standard'}, token)['id']
+                account = self.api('POST', '/api/v1/admin/accounts', {
+                    'name': 'mixed-key-' + str(index), 'platform': 'openai', 'type': 'apikey',
+                    'credentials': {'api_key': MIXED_KEY, 'base_url': 'http://upstream:8787/v1'},
+                    'extra': {'openai_responses_mode': 'force_responses'},
+                    'concurrency': 2, 'rate_multiplier': 1, 'group_ids': [group]}, token)['id']
+                key = self.api('POST', '/api/v1/keys', {'name': 'mixed-' + str(index), 'group_id': group}, token)['key']
+                accounts.append(account); groups.append(group); keys.append(key)
+            target = int(self.sql('SELECT COALESCE(MAX(id),0) FROM scheduler_outbox'))
+            deadline = time.monotonic() + 30
+            while int(self.docker('exec', self.redis, 'redis-cli', '--raw', 'GET',
+                                  'sched:outbox:watermark').stdout.strip() or '0') < target:
+                require(time.monotonic() < deadline, 'mixed request account snapshot was not consumed')
+                time.sleep(.2)
+            rejected_ids = []
+            for index, (first, second) in enumerate(((peer, self.app), (self.app, peer))):
+                before = self.wait_request_state(active=0, slots=0)['calls']
+                self.fixture_api('/arm', {})
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(self.stream_request, first, keys[index], 'mixed-held-' + str(index))
+                    try:
+                        try:
+                            self.wait_request_state(active=1, slots=1, calls=before + 1)
+                        except RuntimeError:
+                            if pending.done():
+                                overlap['held_request_failure'] = pending.result()
+                            raise
+                        rejected = self.stream_request(second, keys[1-index], 'mixed-full-' + str(index))
+                        require(rejected['status'] == 503 and rejected['error_code'] == 'upstream_key_admission_unavailable',
+                                'mixed shared-key saturation did not return its local admission reason')
+                        rejected_ids.append(rejected['client_request_id'])
+                        state = self.wait_request_state(active=1, slots=1, calls=before + 1)
+                        require(state['peak'] == 1, 'mixed version doubled shared upstream capacity')
+                    finally:
+                        self.fixture_api('/release', {})
+                    completed = pending.result(timeout=20)
+                settlement = self.verify_stream_settlement(completed, accounts[index], groups[index], rates[index])
+                self.wait_request_state(active=0, slots=0, calls=before + 1)
+                recovered = self.stream_request(second, keys[1-index], 'mixed-recovery-' + str(index))
+                recovery = self.verify_stream_settlement(recovered, accounts[1-index], groups[1-index], rates[1-index])
+                self.wait_request_state(active=0, slots=0, calls=before + 2)
+                overlap['cases'].append({'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
+                    'rejected_status': rejected['status'], 'rejected_physical_sends': 0,
+                    'held_settlement': settlement, 'recovery_settlement': recovery})
+            overlap['cancellations'] = []
+            for index, (first, second) in enumerate(((peer, self.app), (self.app, peer))):
+                before = self.wait_request_state(active=0, slots=0)['calls']
+                self.fixture_api('/arm', {})
+                try:
+                    cancelled = self.stream_request(first, keys[index], 'mixed-cancel-' + str(index), cancel=True)
+                    require(cancelled['status'] == 200 and cancelled['cancelled'] and cancelled['completed'] == 0
+                            and cancelled['deltas'] > 0, 'mixed cancellation did not close an active stream')
+                    # HTTP deliberately drains upstream usage after downstream
+                    # cancellation. Keep capacity until that physical call ends.
+                    self.wait_request_state(active=1, slots=1, calls=before + 1)
+                    rejected = self.stream_request(second, keys[1-index], 'mixed-cancel-full-' + str(index))
+                    require(rejected['status'] == 503 and rejected['error_code'] == 'upstream_key_admission_unavailable',
+                            'mixed cancellation released capacity before the upstream ended')
+                    rejected_ids.append(rejected['client_request_id'])
+                    self.wait_request_state(active=1, slots=1, calls=before + 1)
+                finally:
+                    self.fixture_api('/release', {})
+                self.wait_request_state(active=0, slots=0, calls=before + 1)
+                drained = self.verify_request_settlement(cancelled['client_request_id'], accounts[index], groups[index], rates[index])
+                recovered = self.stream_request(second, keys[1-index], 'mixed-after-cancel-' + str(index))
+                settlement = self.verify_stream_settlement(recovered, accounts[1-index], groups[1-index], rates[1-index])
+                state = self.wait_request_state(active=0, slots=0, calls=before + 2)
+                overlap['cancellations'].append({'direction': 'baseline_to_candidate' if index == 0 else 'candidate_to_baseline',
+                    'downstream_completed': False, 'held_until_upstream_terminal': True, 'replayed': False,
+                    'drained_settlement': drained, 'recovery_settlement': settlement})
+            require(state['peak'] == 1, 'mixed cancellation/recovery exceeded shared capacity')
+            for request_id in rejected_ids:
+                require(re.fullmatch(r'[A-Za-z0-9_-]{1,255}', request_id), 'invalid rejected-request identity')
+                billing = json.loads(self.sql(f"""SELECT jsonb_build_object(
+                    'usage',(SELECT count(*) FROM usage_logs WHERE request_id='client:{request_id}'),
+                    'claims',(SELECT count(*) FROM usage_billing_dedup WHERE request_id='client:{request_id}'),
+                    'quotes',(SELECT count(*) FROM usage_billing_quotes WHERE request_id='client:{request_id}'))"""))
+                require(all(count == 0 for count in billing.values()), 'local admission rejection created usage or a charge')
+            overlap.update(status='compatible', peak_physical_concurrency=state['peak'],
+                           cancellation_released_after_terminal=True, rejection_billing_rows=0,
+                           successful_streams=6, drained_cancelled_calls=2, rejected_requests=len(rejected_ids))
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+            overlap['status'] = 'failed'
+            raise
+        finally:
+            if peer is not None:
+                self.stop_app(peer)
+
     def exercise(self):
         self.create('network', '--internal', self.prefix)
         self.db = self.create('container', '--name', self.prefix + '-db', '--network', self.prefix,
@@ -267,6 +524,10 @@ class Rehearsal:
         while self.docker('exec', self.db, 'pg_isready', '-U', 'postgres', check=False).returncode:
             require(time.monotonic() < deadline, 'isolated PostgreSQL startup timed out')
             time.sleep(0.5)
+        if getattr(self.args, 'overlap_requests', False):
+            self.upstream = self.create('container', '--name', self.prefix + '-upstream', '--network', self.prefix,
+                                        '--network-alias', 'upstream', self.args.runtime_image,
+                                        'python', '-u', '-c', REQUEST_UPSTREAM)
         token = self.start_app(self.baseline, 'baseline')
         config_path = '/api/v1/admin/priority-scheduling/config'
         legacy = self.api('GET', config_path, token=token)
@@ -297,6 +558,8 @@ class Rehearsal:
         if getattr(self.args, 'overlap_config', False):
             self.exercise_config_overlap(config_path, account, original, baseline_fields, token)
             self.api('PUT', config_path, current, token)
+        if getattr(self.args, 'overlap_requests', False):
+            self.exercise_request_overlap(token)
         require(current['target_tps'] == 47, 'legacy-shaped save erased the new TPS target')
         require(current['preserve_session_affinity'] and not current['enabled'], 'legacy-shaped save changed policy')
         self.result.update(after_migrations=len(after), old_checksums_preserved=True,
