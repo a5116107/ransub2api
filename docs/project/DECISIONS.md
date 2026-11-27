@@ -2799,3 +2799,18 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 质量service专项退出0/0.899s；前端四文件39项/类型/eslint退出0，30个文档链接及STATE预算通过。PG首轮仅OAuthDegradationAuditAllowsOwnedQualityGroupRestore失败：重载计划丢失运行期线路指纹，却未重新领取租约；修正夹具为先断言stale_run、完成旧租约再领取新租约，原恢复/组别/标记/事件断言保留，生产栅栏未放宽。
 - Windows首轮race在Docker发现阶段早退且未给原因，不推定为生产故障。复用原TestMain的显式依赖端口，在本机隔离PG18/Redis8上以GOMEMLIMIT=2GiB/GOGC=50执行相同仓储及扩大的质量栅栏race双轮，90.107s退出0/无失败跳过；两个带精确ID/标签的依赖均finally回收。原失败日志保持。
 - 完整handler首轮达约10GiB内存，精确终止该任务进程并保留609.638s失败/终止证据；不报通过。按2GiB软内存限制/parallel2补验仍运行。系统golangci-lint由Go1.26构建而拒绝Go1.27.4，复用已有v2.15.0兼容工具及原规则增量检查；静态最终结果、生产副本/发行/部署仍待，不提前关R1.3。
+
+
+### 2026-11-27 R1.3交付：同源.3上线、界面与唯一结算
+
+- 最终兼容v2.15.0增量原规则lint退出0/0 issues，Windows/Linux service+repository vet退出0；前端原39与追加自动配置105共144项均通过、类型/eslint0。本地首建因主动设2GiB Node堆而在vue-tsc失败，无制品；释放已退出重验证资源后改为4GiB，于相同版本/路径构建成功，不新建源码树或依赖副本。最终frontend临时目录0，不清历史受保护dist。
+- 不可变.3来源55a8388f3df5402fd46145e45e839b23db5ed28a，程序170918048B/SHA31db69bd708b3c138c3b244388d8c8f64aa5e591ffacf4cf0b2b0d223a9a6b87，归档54246170B/SHA79648d959398a08af32b259c95bbd052402ff543a5065fa740ce59b3bbc1544d。500MiB上限与公开四资产逐项digest保持。
+- 副本以当前生产新快照103517769B/SHA5fb5800e659fcd2bb548c0bc4895bf8530842c07f251bf2b9d7e23b688efa7c1完成.2→.3→.2→.3真实加载；四阶段499迁移完整checksum不变，16账号/原分组/售价/配置及11张历史摘要相等。没有新诊断迁移，不借上轮400删表恢复路径；副本7资源按ID/标签全部回收，production_changed=false、无供应商检测。
+- PR9固定head55a8388f3、basef73ab420f，同上下文逐项审核记录而非独立审核；用户授权范围内正常快进production，GitHub自动标MERGED，00:42:52Z合并，两个自有稳定ref与标签同一SHA，官方祖先保留。未force/删branch，供应池开发分支不动。Release在推送合并前暂时停用避免源码CI，00:43:14Z正式发布.3后恢复active。run45918416148成功，仅publish-prebuilt-image；七源码作业skipped，不编译测试CI。固定GHCR镜像fe791d9b150d0ff0a521177f2191a2f0c5d7a30df3128d286e535fb09a3f7ad7与程序同源。
+- 08:48HKT生产pull/deploy/verify退出0：原在线更新200并验证SHA、排空切换、后台SIGTERM优雅重启及同镜像重建三阶段实际加载相同程序。最终APP6d233aeef8d5，原PGf30095818cb1/Redis5b796d6478e0不变，16账号/2组/1用户/1Key/499迁移保持；优先调度仍关闭、原120/300秒首输出配置未改。停止后切换备份database.cutover-031a4be27939.dump/SHA c729662f9b2d31281ffc1fd1cafbddc26127fc362fa92e2acac3550b92e734b3；旧程序.2/镜像/数据库/数据/配置与诊断历史归档全部保留，未执行手工退役SQL。
+- 最终public-smoke退出0/passed=true：current=latest=2.25.4-ransub.3、has_update=false；真实登录、逐账号性能/timer、流量加载、原守护及工单禁用边界保持。中英1440/390总览过滤/下钻/编辑预填/授权/错误恢复/键盘/沙箱、工具检测预算入口和真实自动配置新增混合复核说明已验；pageerror/HTTP错误/配置写入均0，零付费检测。没有待对照线上轮次，保留匹配源码fixture的证明边界。混合规则当前未启用，没有为了截取新事件而修改账号/计划。原UTF8证据中请求错误标签字节正确，终端GBK乱码不回写源码。
+- 唯一真实gpt-6.1-sol SSE完成1、正文正常，含网络1.719秒（非纯上游TTFT），clientfeff9b72-5706-4f92-818a-c192fe01a37c，usage140071/上游14、输入53/输出5；同请求SQL关联恰好usage1/claim1/quote1/旧event0，canonical实际费与wallet_debit/付款用户一致。非长期SLA、模型身份/缓存域或旧会话全面恢复证明。
+- 授权清理先dry-run核候选SHA及/proc/容器挂载0引用后，删除候选170918048B和cutover字段37134B，共170955182逻辑字节；rollback_preserved=true/health=ok，不把逻辑量当全盘释放量。原受保护scratch不动；轮换凭据仅查元数据仍缺，未使用聊天token。证据沿sub2api-quality-evidence/upstream-v2254-patch-*，不建新台账。
+- R1.3明确范围完成；原28项20done/8部分保持。完整handler单进程两轮仍因累积夹具内存终止，原失败保留；以同源码完整枚举名单分批验证，九号重分为10测试的小批，尚待其最终结果，不将分批结果冒称单进程全仓绿。
+
+- 完整枚举handler最终分批覆盖1482根：除资源终止的九号外，原12批均PASS；九号同一120根再分12小批全部PASS。去除原中止九号602条重复部分结果后，规范覆盖共5762条pass事件（含父子例）、0断言失败，保留2个原skip：TestDingTalkOAuthStart_Disabled、TestResolvePageImagePathRejectsSymlinkEscape。后者仍需Windows符号链接权限；不改skip，不冒称单进程全仓通过。证据handler-shards.json保留原passed=false及中止记录，并关联完整recovery的SHA；不是把原失败改绿。全部验证进程退出，无新源码/依赖副本，生产无再次请求或重部署。
