@@ -116,6 +116,19 @@ describe('Select dropdown viewport constraints', () => {
 })
 
 describe('Select remote search', () => {
+	 it('repositions after asynchronous options grow near the bottom edge', async () => {
+	   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
+	   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ top: 760, bottom: 800, left: 20, right: 320, width: 300, height: 40, x: 20, y: 760, toJSON: () => ({}) })
+	   let height = 40
+	   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function () { return (this as HTMLElement).classList.contains('select-dropdown-portal') ? height : 20 })
+	   const wrapper = mount(Select, { props: { modelValue: null, options: [], remote: true } })
+	   unmountWrapper = () => { wrapper.unmount(); Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 }) }
+	   await wrapper.get('button').trigger('click'); await nextTick(); await nextTick()
+	   expect(document.querySelector<HTMLElement>('.select-dropdown-portal')?.style.top).toBe('804px')
+	   height = 240
+	   await wrapper.setProps({ options: [{ value: 7, label: 'Local source group' }] }); await nextTick(); await nextTick()
+	   expect(document.querySelector<HTMLElement>('.select-dropdown-portal')?.style.bottom).toBe('88px')
+	 })
   const mountRemoteSelect = (props: Record<string, unknown> = {}) => {
     const wrapper = mount(Select, {
       props: {

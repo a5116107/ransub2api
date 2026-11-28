@@ -1,4 +1,33 @@
 export default {
+  sources: {
+    title: 'Supply inventory', subtitle: 'Declared sources · Routing unchanged',
+    scope: 'Register supplier → provider → purchase group → local account. Registration is not a passed check and changes no memberships, prices, concurrency or routing. Fixed-group selection, model quality and cost each need their own evidence.',
+    search: 'Find supplier, purchase group or account', platform: 'Provider', all: 'All providers', read: 'Read again', register: 'Register source', loading: 'Reading source inventory…',
+    empty: 'No registered sources match this view. Existing accounts are never assigned to suppliers by matching URLs or names.',
+    failed: 'Source inventory could not be read. Old conclusions are hidden; read again.', forbidden: 'This role has no access to supply-source management.',
+    conflict: 'The declaration already exists or its revision changed. Your draft is preserved. Read the inventory before retrying; writes are never retried automatically.',
+    saveUnconfirmed: 'The saved state has not been confirmed. Your draft is preserved. Read and check the inventory; the write will not be replayed automatically.',
+    saved: 'Saved and independently read back · Still unverified', save: 'Save declaration', saving: 'Saving and confirming…',
+    siteName: 'Supplier name', siteCode: 'Stable supplier code', siteCodeHelp: 'Lowercase letters, digits, hyphens or underscores. Reuse the same code for the same supplier; enter no URL or secret.',
+    externalName: 'Upstream purchase-group name', externalID: 'Upstream purchase-group ID', localGroup: 'Local source group', account: 'Existing account in this group', choose: 'Search by name',
+    optionsFailed: 'Groups or accounts could not be read. Reopen the selector to retry.', optionsScope: 'Only matching-provider local groups and their existing accounts are listed, up to 100 per search. Refine by name. No keys are copied and no accounts or groups are created.',
+    consent: 'I have checked this relationship and am saving a declaration only. It grants no automatic-supply eligibility before fixed-group selection is verified.',
+    observed: 'Read at', updated: 'Declaration updated', page: 'Page {page} · {total} source mappings', pagination: 'Source mapping pagination',
+    noAccount: 'No account mapped', details: 'Show evidence', route: 'Account route', fixedGroup: 'Request-level fixed-group selection', unverified: 'Unverified', openAccount: 'Manage original account',
+    pause: 'Pause declaration', resume: 'Resume declaration', remove: 'Remove mapping', confirmTitle: 'Confirm declaration change',
+    confirmAction: 'Only the source declaration changes. The original account, group memberships and business routing are preserved. Registering it again still requires verification.',
+    states: { pending_verification: 'Unverified · Not managed', paused: 'Declaration paused', blocked: 'Needs attention · Not managed', review_required: 'Route changed · Review required' },
+    routes: { current: 'Matches registration', changed: 'Changed since registration', unknown: 'Not confirmed' },
+    reasons: {
+      fixed_group_selection_unverified: 'Source registered; no evidence yet proves business requests select this exact purchase group.',
+      source_mapping_paused: 'This group or account declaration is paused; the original account is not disabled by it.',
+      source_account_not_mapped: 'This purchase group has no account mapping.', source_account_deleted: 'The original account was deleted; the declaration remains for review.',
+      local_group_deleted: 'The local source group was deleted.', source_platform_mismatch: 'The account or local group changed provider. Review the mapping.',
+      source_account_not_in_local_group: 'The account left its local source group.', source_account_inactive: 'The original account is not active.',
+      local_group_inactive: 'The local source group is not active.', source_account_route_changed: 'The endpoint, credentials or route configuration changed. Resuming the declaration does not renew old evidence.',
+      source_account_route_unknown: 'The current account-route identity is not confirmed.', unknown: 'This source needs review; no dispatch eligibility is granted.'
+    }
+  },
   lines: {
     availability: {
       title: 'Latest availability', scope: 'Current rule decisions are independent of the historical window above. They attest only to the listed request scope, not model identity or complete product eligibility.', unread: 'Current state was not read or does not support this model scope. Historical passes are not inherited.', empty: 'No matching-model availability rules for this account on this page.',

@@ -358,6 +358,7 @@ const findPrevEnabledIndex = (startIndex: number): number => {
 
 watch(filteredOptions, () => {
   if (!isOpen.value) return
+  calculateDropdownPosition()
   focusedIndex.value = findNextEnabledIndex(0)
   if (focusedIndex.value >= 0) scrollToFocused()
 })
@@ -417,12 +418,12 @@ watch(isOpen, (open) => {
     }
 
     if (isSearchable.value) {
-      nextTick(() => searchInputRef.value?.focus())
+      nextTick(() => searchInputRef.value?.focus({ preventScroll: true }))
     } else {
-      nextTick(() => dropdownRef.value?.focus())
+      nextTick(() => dropdownRef.value?.focus({ preventScroll: true }))
     }
     // Add scroll listener to update position
-    window.addEventListener('scroll', updateTriggerRect, { capture: true, passive: true })
+    window.addEventListener('scroll', calculateDropdownPosition, { capture: true, passive: true })
     window.addEventListener('resize', calculateDropdownPosition)
   } else {
     searchQuery.value = ''
@@ -432,7 +433,7 @@ watch(isOpen, (open) => {
       clearTimeout(remoteSearchTimer)
       remoteSearchTimer = null
     }
-    window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+    window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
   }
 })
@@ -541,7 +542,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+  window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
   window.removeEventListener('resize', calculateDropdownPosition)
   if (remoteSearchTimer) {
     clearTimeout(remoteSearchTimer)

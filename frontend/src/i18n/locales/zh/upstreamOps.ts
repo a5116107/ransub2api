@@ -1,4 +1,33 @@
 export default {
+  sources: {
+    title: '上游清册', subtitle: '来源登记 · 尚未接管调度',
+    scope: '登记供应商 → 厂商 → 采购组 → 本地账号。登记不等于检测通过，不会修改现有分组、售价、并发或调度；固定组选路、模型质量与成本仍需分别核实。',
+    search: '找站点、采购组或账号', platform: '厂商', all: '全部厂商', read: '重新读取', register: '登记来源', loading: '正在读取来源清册…',
+    empty: '当前范围尚无来源登记。已有账号不会被按地址或名称自动归入供应商。',
+    failed: '来源读取失败，未显示旧结论。请重新读取。', forbidden: '当前身份没有供应来源管理权限。',
+    conflict: '登记已存在或版本已变更。草稿已保留，请先重新读取清册核对；不会自动重试保存。',
+    saveUnconfirmed: '保存状态尚未核实。草稿已保留，请重新读取并核对登记，不会自动重放写入。',
+    saved: '已保存并独立读回 · 仍待核验', save: '保存来源登记', saving: '正在保存并核实…',
+    siteName: '供应商名称', siteCode: '供应商固定标识', siteCodeHelp: '小写字母、数字、短横线或下划线；同一供应商始终使用同一标识，不填写网址或密钥。',
+    externalName: '上游采购组名称', externalID: '上游采购组标识', localGroup: '本地来源分组', account: '该分组内的现有账号', choose: '按名称搜索选择',
+    optionsFailed: '分组或账号读取失败；重新打开选择框可重试。', optionsScope: '仅显示同厂商的来源分组及其现有账号，每次最多100项；继续输入名称可缩小范围。不复制密钥，也不自动创建账号或分组。',
+    consent: '我已核对来源关系，仅保存登记；固定组选路未核实前，不将此登记当作自动供货资格。',
+    observed: '本次读取时间', updated: '登记更新时间', page: '第 {page} 页 · 共 {total} 条来源映射', pagination: '来源映射分页',
+    noAccount: '尚无账号映射', details: '展开依据', route: '账号线路', fixedGroup: '请求固定组选路', unverified: '待核实', openAccount: '管理原账号',
+    pause: '暂停此登记', resume: '恢复此登记', remove: '移除此映射', confirmTitle: '确认修改来源登记',
+    confirmAction: '此操作只修改来源登记，不删除原账号、不改变原分组关系或业务调度。移除后重新登记仍需核验。',
+    states: { pending_verification: '待核验 · 未接管', paused: '登记已暂停', blocked: '需要处理 · 未接管', review_required: '线路已变化 · 请重核' },
+    routes: { current: '与登记时一致', changed: '与登记时不同', unknown: '尚未确认' },
+    reasons: {
+      fixed_group_selection_unverified: '来源已登记；尚无业务请求固定命中该采购组的证据。',
+      source_mapping_paused: '此采购组或账号映射的登记已暂停，不代表原账号被停用。',
+      source_account_not_mapped: '采购组暂未关联账号。', source_account_deleted: '原账号已删除，保留来源登记供核对。',
+      local_group_deleted: '本地来源分组已删除。', source_platform_mismatch: '账号或本地分组的厂商已变化，请重新核对。',
+      source_account_not_in_local_group: '账号已移出本地来源分组。', source_account_inactive: '原账号当前不是启用状态。',
+      local_group_inactive: '本地来源分组当前未启用。', source_account_route_changed: '端点、凭据或线路配置已变化；恢复登记不会续用旧证据。',
+      source_account_route_unknown: '当前账号线路身份尚未确认。', unknown: '当前来源需要进一步核对，不据此授予调度资格。'
+    }
+  },
   lines: {
     availability: {
       title: '最新可用状态', scope: '读取当前规则的最新决定，与上方历史窗口独立；只证明所列请求范围，不是模型身份或完整产品资格。', unread: '当前状态未读取或模型口径不适用，不沿用历史通过。', empty: '本页账号没有对应模型的可用状态规则。',
