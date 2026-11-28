@@ -4828,3 +4828,11 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 最终Windows命令：`go test -race -tags unit,integration -p 1 ./internal/domain ./internal/repository ./internal/handler/admin ./internal/server/routes -run 'ProcurementSourceMapping|ChannelOperationsRoutes' -count=1 -json`，53条test pass、0fail/skip/race，四包pass。真实PG18/Redis8由原testcontainers夹具创建/销毁。五包 `go vet -tags unit,integration -p 1` exit0，golangci-lint2.15原fast/unit,integration/new-from-rev=0ae86fccf五包0 issues。Linux复用已有golang容器及模块/构建缓存，启用自动工具链至项目要求go1.27.4后四包聚焦单测exit0，非Linux数据库/race验收；初始WSL无Go/守护进程及镜像默认GOTOOLCHAIN=local的失败分别保留，不修改宿主服务或依赖锁。
 - 最终前端8套Vitest168pass、vue-tsc/9路径ESLint exit0，实际Vite构建通过。Edge中文/英文×1440/390共24检查通过，页面异常/未预期API/外站请求0，涵盖键盘展开、真实名称选择、显式保存+独立读回、重开、空态、读失败隐藏旧结论/恢复、409保留草稿不重放、窄屏输入宽度与页面无横溢出。浏览器使用隔离API夹具，非生产或实际供应商证明，SQL/HTTP持久化另验。首轮新站点fixture误用旧site_id/source_group_id，导致合并展示；按真实身份修正fixture，未把测试示例当真实供应商。初次失败及修正原因保留；构建既有Browserslist/大chunk/依赖动态导入警告未改锁规避。
 - 设计原文12.1.10十补本切片契约/回滚与A→B/C→D→E→F依赖；STATE保持≤100行/8192字节、原28项20done/8部分，D7不因子项完成关闭。生产沿先前已留证的2.25.5-ransub.2/86a1db655，本轮不读写生产，不CI、不创建/合并PR、不发行或部署。最小证据与源码/浏览器矩阵保存在 `H:/Root/DevCache/evidence/sub2api-production-flow-review/source-mapping/`；浏览器已退出，任务自有tmp根的原生PowerShell清理被宿主策略拒绝，保留原位待宿主解除，不换工具/移动绕行；复用的Go/前端缓存不删除。历史拒删资源保持。
+
+## 2026-11-28 用户更正：唯一源码目录与工作区归并
+
+- 用户明确要求代码不分散、保持唯一目录/工作区、不新增冗余与临时技术债。唯一开发目录固定为 `H:/Root/jiaoben/01_AI接口与网关/sub2api`，继续使用既有 `feat/automated-upstream-supply`。不再为这个项目新建 clone、worktree、源码副本或平行实现；本次不做业务合并、CI、PR、发行或生产变更。
+- 已核对并移除本轮 `sub2api-d7.4-source-map` 额外工作树，其代码已在自有研发线 `b42f2489a`；先移除仅指向原目录的 node_modules junction，原共享依赖保持。删除已合入研发线的本轮 `work/d7.4-source-mapping` 临时分支，不删已有历史/回滚分支。Git worktree list 实际仅剩标准目录一项，额外路径不存在，也没有引用它的活跃进程。
+- 在原 Git 对象库中校验保全14个既有未提交文件（1827436逻辑字节），未建备份源码目录或使用stash/reset。切回研发线后，首页与图册10个文件的SHA256逐项不变；来源登记22个已验证实现/测试输入与 `b42f2489a` 一致。切分支时的文档冲突已解决，当前设计采用最新产品方案并保留源码验收边界；过时章节引用已改正，日期证据不作当前进度。用户既有首页/设计改动继续留在工作区，不夹带进本轮提交。
+- 标准目录实际执行：vue-tsc exit0；来源清册、API、Select、原HomeView compact及i18n五套Vitest **50 passed / 5 files**；Go domain聚焦测试 `go test -tags unit ./internal/domain -run ProcurementSourceMapping -count=1` exit0/0.477s。来源实现未改，原Windows race53、Linux聚焦和浏览器24匹配证据复用，不重复启动完整构建/数据库/浏览器。无合并标记/未合并索引，文档本地文件链接0缺失，STATE仍≤100行/8192字节。
+- 验证沿原工具和共享缓存；本轮不新增构建目录、守护进程、临时适配器或清理台账。既有 `H:/Root/DevCache/tmp/sub2api-d7.4-source-map` 的9583364B构建仍是宿主策略拒删项，不重试或换工具绕行，不混入源码；最小迁移保全索引沿既有source-mapping证据目录的consolidation.json。

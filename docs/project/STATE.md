@@ -3,13 +3,11 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-任务：D7.4-A1已验；A2登记链已验，实际组选路/模型档/产品消费仍待。
-授权：本地实现/自有研发分支同步；不CI、不创建/合并PR、不发行/部署。
-基线：feat/automated-upstream-supply 0ae86fccf；任务树sub2api-d7.4-source-map。
-已核：外部组≠本地Group；财务归属不作路由；声明不授予调度资格。
-验证：Win race53/0fail/0skip；Linux聚焦；PG/CAS/100站点/迁移；UI168/浏览器24；vet/lint/type通过。
-全局：28项20done/8partial；D7保持in_progress，外部验收保留。
-下一步：A2实际组选路/模型档→B/C→D→E/F；设计12.1.10十，证据见DECISIONS。
+Task: sole workspace H:/Root/jiaoben/01_AI接口与网关/sub2api on feat/automated-upstream-supply b42f2489a.
+Extra source tree removed; original homepage/atlas preserved. Latest approved product plan plus A1 implementation retained.
+Verified feature: Win race53, Linux focused, UI168/browser24. Canonical path: typecheck/50 UI tests/domain pass; no CI/PR/release/deploy.
+28 tasks/20 done/8 partial. A1 done; A2 actual fixed-group proof/model-tier/product consumption pending. See design and DECISIONS.
+9583364B prior scratch is host-policy blocked; retain, no workaround.
 <!-- resume:end -->
 
 ## 目标与入口
@@ -86,5 +84,5 @@
 
 ## 工作区与环境限制
 
-- 原sub2api稳定树保留未提交文档/首页；本任务隔离树sub2api-d7.4-source-map承载同一研发功能。origin自有ransub2api，upstream禁推。
+- 唯一工作区H:/Root/jiaoben/01_AI接口与网关/sub2api；不再新建clone/worktree/源码副本，原首页/设计草稿保留。
 - 原拒删资源保持，见DECISIONS。新增H:/Root/DevCache/tmp/sub2api-d7.4-source-map清理被宿主拒绝，待宿主解除，不重试。
