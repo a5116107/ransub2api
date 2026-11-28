@@ -64,6 +64,19 @@
                         <p class="break-all font-medium">{{ entry.model }}</p><p :class="entry.conclusion === 'conflict' || entry.conclusion === 'excluded' ? 'text-red-700 dark:text-red-300' : 'text-amber-800 dark:text-amber-300'" data-testid="source-model-verdict">{{ t(p + '.evidence.verdicts.' + entry.conclusion) }}</p>
                         <p class="break-words">{{ t(p + '.evidence.protocol') }}：{{ entry.protocol }} · {{ t(p + '.evidence.tier') }}：{{ entry.service_tier }}</p><p class="break-words">{{ t(p + '.evidence.effort') }}：{{ entry.reasoning_effort }} · {{ t(p + '.evidence.context') }}：{{ entry.context }}</p>
                         <p v-if="entry.reasoning_summary">{{ t('admin.accounts.upstreamBilling.manualApplicability.summary') }}：{{ entry.reasoning_summary }}</p><p v-if="entry.text_verbosity">{{ t('admin.accounts.upstreamBilling.manualApplicability.verbosity') }}：{{ entry.text_verbosity }}</p><p v-if="entry.include_encrypted_content">{{ t('admin.accounts.upstreamBilling.manualApplicability.encrypted') }}</p>
+                        <details v-if="entry.unit_quote" class="border-t border-gray-200 pt-2 dark:border-dark-600" data-testid="source-unit-quote">
+                          <summary class="cursor-pointer font-medium">{{ t(p + '.unitQuote.title') }} · {{ t(p + '.unitQuote.states.' + entry.unit_quote.status) }}</summary>
+                          <div class="mt-2 space-y-2">
+                            <p class="text-amber-800 dark:text-amber-300">{{ t(p + '.unitQuote.scope') }}</p>
+                            <template v-if="entry.unit_quote.components.length">
+                              <p>{{ t(p + '.unitQuote.unit') }}</p>
+                              <dl class="grid min-w-0 grid-cols-2 gap-3"><div v-for="component in entry.unit_quote.components" :key="component.code" class="min-w-0"><dt>{{ t(p + '.unitQuote.components.' + component.code) }}</dt><dd class="break-words font-medium" data-testid="source-unit-amount">{{ unitAmount(component.amount) }}</dd><dd v-if="component.status !== 'estimated'" class="mt-1 text-gray-500">{{ t(p + '.unitQuote.componentStates.' + component.status) }}</dd></div></dl>
+                              <p>{{ t(p + '.unitQuote.groupRate') }} {{ entry.unit_quote.effective_group_rate }}</p>
+                              <p v-if="entry.unit_quote.catalog_updated_at" class="text-gray-500">{{ t(p + '.unitQuote.updated') }} {{ formatDateTimeToMinute(entry.unit_quote.catalog_updated_at, locale) }}</p>
+                              <details class="text-gray-500"><summary class="cursor-pointer">{{ t(p + '.unitQuote.version') }}</summary><code class="mt-1 block break-all">{{ entry.unit_quote.baseline_hash }}</code></details>
+                            </template>
+                          </div>
+                        </details>
                       </article>
                       <p v-if="!filteredModels(item).length" class="text-xs text-gray-500">{{ t(p + '.evidence.noMatch') }}</p>
                       <nav v-if="filteredModels(item).length > 10" class="flex flex-wrap items-center gap-2" :aria-label="t(p + '.evidence.pagination')"><button type="button" class="btn btn-secondary" :disabled="(modelPages[item.id] ?? 1) <= 1" @click="modelPages[item.id] = (modelPages[item.id] ?? 1) - 1">{{ t('upstreamOps.previous') }}</button><span>{{ modelPages[item.id] ?? 1 }} / {{ Math.ceil(filteredModels(item).length / 10) }}</span><button type="button" class="btn btn-secondary" :disabled="(modelPages[item.id] ?? 1) * 10 >= filteredModels(item).length" @click="modelPages[item.id] = (modelPages[item.id] ?? 1) + 1">{{ t('upstreamOps.next') }}</button></nav>
@@ -133,6 +146,7 @@ import {
 import type { AccountListItem, AdminGroup, GroupPlatform } from '@/types'
 
 const { t, locale } = useI18n(), p = 'upstreamOps.sources'
+const unitAmount = (value: number | null) => value === null ? '—' : new Intl.NumberFormat(locale.value, { maximumSignificantDigits: 8 }).format(value)
 const search = ref(''), filterPlatform = ref(''), snapshot = ref<ProcurementSourcePage | null>(null)
 const reading = ref(false), saving = ref(false), showForm = ref(false), consent = ref(false), uncertain = ref(false), error = ref(''), optionsError = ref(false)
 const saved = ref<ProcurementSourceMapping | null>(null)

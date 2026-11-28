@@ -1,5 +1,35 @@
 export default {
   sources: {
+    unitQuote: {
+      "title": "Component catalog estimate",
+      "scope": "Current local catalog × group multiplier only, not a supplier invoice or verified cost. Supplier component baselines, cache discounts, long context and other charges remain unverified. This does not qualify a product.",
+      "unit": "USD / million tokens · base context only",
+      "groupRate": "Effective group multiplier:",
+      "updated": "Local catalog updated:",
+      "version": "Local baseline digest (not supplier-confirmed)",
+      "components": {
+        "input": "Input",
+        "output": "Output",
+        "cache_read": "Cache read",
+        "cache_write": "Cache write"
+      },
+      "componentStates": {
+        "not_declared": "Price not explicitly declared for this tier",
+        "billing_policy_differs": "Native billing policy differs from this catalog field; no estimate"
+      },
+      "states": {
+        "estimated": "Estimated · Components unverified",
+        "partial": "Partial prices · Missing components",
+        "scope_not_covered": "Scope not covered",
+        "evidence_expired": "Group or model evidence expired",
+        "rate_unavailable": "Current group rate unconfirmed",
+        "catalog_unavailable": "Local catalog unavailable",
+        "model_not_exact": "No exact model price",
+        "provider_mismatch": "Catalog vendor does not match",
+        "unsupported_scope": "Tier or metering not covered",
+        "invalid_catalog": "Invalid catalog"
+      }
+    },
     evidence: {
       "selectionTitle": "Purchase-group check",
       "modelsTitle": "Model quotation scope",

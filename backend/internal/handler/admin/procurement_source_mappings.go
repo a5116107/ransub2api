@@ -47,6 +47,7 @@ func (h *ChannelHandler) ProcurementSourceMappings(c *gin.Context) {
 				procurementSourceMappingError(c, err)
 				return
 			}
+			h.channelService.AddProcurementSourcePricing(out)
 			response.Success(c, out)
 			return
 		}
@@ -55,6 +56,9 @@ func (h *ChannelHandler) ProcurementSourceMappings(c *gin.Context) {
 		if err != nil {
 			procurementSourceMappingError(c, err)
 			return
+		}
+		for i := range out.Items {
+			h.channelService.AddProcurementSourcePricing(&out.Items[i])
 		}
 		response.Success(c, out)
 	case http.MethodPost:

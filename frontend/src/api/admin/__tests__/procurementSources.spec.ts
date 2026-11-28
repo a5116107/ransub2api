@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
-import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, validUpstreamGroupCatalog, validProcurementSourceEvidence, type ProcurementSourceEvidence, type UpstreamGroupCatalogView, type ProcurementSourceMapping } from '../procurementSources'
+import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, validUpstreamGroupCatalog, validProcurementSourceEvidence, validProcurementUnitQuote, type ProcurementSourceUnitQuote, type ProcurementSourceEvidence, type UpstreamGroupCatalogView, type ProcurementSourceMapping } from '../procurementSources'
 
 vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }))
 export const sourceFixture = (): ProcurementSourceMapping => ({
@@ -25,6 +25,37 @@ export const evidenceFixture = (): ProcurementSourceEvidence => ({ version: 1, a
 })
 
 describe('administrator-only source declaration contract', () => {
+  const unit = (): ProcurementSourceUnitQuote => ({ version: 1, status: 'estimated', currency: 'USD', unit: 'per_1m_tokens_base_context', baseline_hash: 'a'.repeat(64), catalog_updated_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T00:10:00Z', effective_group_rate: 0.5,
+    components: [{ code: 'input', status: 'estimated', amount: 1 }, { code: 'output', status: 'estimated', amount: 5 }, { code: 'cache_read', status: 'estimated', amount: 0 }, { code: 'cache_write', status: 'estimated', amount: 1.25 }],
+    pending: ['supplier_baseline_unverified', 'supplier_components_unverified', 'other_components_unreviewed'] })
+  it('accepts bounded component estimates and preserves a stated zero, never qualification', () => {
+    const e = evidenceFixture(), q = unit()
+    expect(validProcurementUnitQuote(q)).toBe(true)
+    e.selection.effective_group_rate = 0.5
+    e.models.entries[0]!.conclusion = 'covered'
+    e.models.entries[0]!.unit_quote = q
+    expect(validProcurementSourceEvidence(e)).toBe(true)
+    q.components[2] = { code: 'cache_read', status: 'not_declared', amount: null }; q.status = 'partial'
+    expect(validProcurementSourceEvidence(e)).toBe(true)
+    expect(q.components[2].amount).toBeNull()
+  })
+  it.each(['version', 'negative', 'nonfinite', 'currency', 'unit', 'duplicate-component', 'unknown-as-zero', 'missing-pending', 'hash', 'expired', 'wrong-rate', 'excluded-scope'])('rejects malformed or mis-scoped unit prices: %s', mode => {
+    const e = evidenceFixture(), q = unit(); e.selection.effective_group_rate = 0.5
+    e.models.entries[0]!.conclusion = 'covered'; e.models.entries[0]!.unit_quote = q
+    if (mode === 'version') Object.assign(q, { version: 2 })
+    if (mode === 'negative') q.components[0]!.amount = -1
+    if (mode === 'nonfinite') q.components[0]!.amount = Infinity
+    if (mode === 'currency') Object.assign(q, { currency: 'OTHER' })
+    if (mode === 'unit') Object.assign(q, { unit: 'per_request' })
+    if (mode === 'duplicate-component') q.components[1]!.code = 'input'
+    if (mode === 'unknown-as-zero') { q.status = 'partial'; q.components[2]!.status = 'not_declared' }
+    if (mode === 'missing-pending') q.pending.pop()
+    if (mode === 'hash') q.baseline_hash = ''
+    if (mode === 'expired') q.expires_at = '2026-11-27T00:00:00Z'
+    if (mode === 'wrong-rate') q.effective_group_rate = .1
+    if (mode === 'excluded-scope') e.models.entries[0]!.conclusion = 'excluded'
+    expect(validProcurementSourceEvidence(e)).toBe(false)
+  })
   it('accepts a declaration-level group/model read model without upgrading dispatch eligibility', () => {
     const evidence = evidenceFixture()
     expect(validProcurementSourceEvidence(evidence)).toBe(true)

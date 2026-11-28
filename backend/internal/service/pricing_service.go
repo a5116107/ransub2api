@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -235,6 +236,11 @@ var (
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
+	// Declaration presence is diagnostic metadata, not a change to billing's
+	// legacy fallback rules. It prevents a missing/null catalog field becoming
+	// a confirmed zero-price component in strict quotation reviews.
+	DeclaredTokenPrices map[string]bool `json:"-"`
+
 	CacheCreationInputTokenCostExplicit bool    `json:"-"`
 	InputCostPerToken                   float64 `json:"input_cost_per_token"`
 	InputCostPerTokenPriority           float64 `json:"input_cost_per_token_priority"`
@@ -716,6 +722,22 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 			SupportsPromptCaching: entry.SupportsPromptCaching,
 			SupportsServiceTier:   entry.SupportsServiceTier,
 			TokenPricingAbsent:    entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
+		}
+		if fields, unique := availabilityJSONObject(gjson.ParseBytes(rawEntry)); unique {
+			pricing.DeclaredTokenPrices = make(map[string]bool)
+			for _, key := range []string{"input_cost_per_token", "output_cost_per_token", "cache_read_input_token_cost", "cache_creation_input_token_cost",
+				"input_cost_per_token_priority", "output_cost_per_token_priority", "cache_read_input_token_cost_priority", "cache_creation_input_token_cost_priority"} {
+				value := fields[key]
+				pricing.DeclaredTokenPrices[key] = value.Type == gjson.Number && newAPIFinite(value.Float()) && value.Float() >= 0
+				// Go's legacy struct decoder accepts case-insensitive aliases.
+				// Keep billing compatibility, but never call an ambiguous field
+				// a canonical explicit price in an administrator's estimate.
+				for name := range fields {
+					if name != key && strings.EqualFold(name, key) {
+						pricing.DeclaredTokenPrices[key] = false
+					}
+				}
+			}
 		}
 
 		if entry.InputCostPerToken != nil {

@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,7 +24,15 @@ import (
 func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) {
 	db, _ := repository.UpstreamChannelsTestDatabase(t)
 	repo := repository.NewChannelRepository(db)
-	h := admin.NewChannelHandler(service.NewChannelService(repo, nil, nil, nil, nil), nil, nil)
+	// The administrator consumes the real local catalog loader, not a second
+	// calculator in a mock response or the browser.
+	dir := t.TempDir()
+	catalog := filepath.Join(dir, "model_pricing.json")
+	require.NoError(t, os.WriteFile(catalog, []byte(`{"gpt-fixture":{"litellm_provider":"openai","mode":"chat","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"cache_read_input_token_cost":0,"cache_creation_input_token_cost":0.0000025,"input_cost_per_token_priority":0.000004,"output_cost_per_token_priority":0.00002,"cache_read_input_token_cost_priority":0,"cache_creation_input_token_cost_priority":0.000005}}`), 0600))
+	pricing := service.NewPricingService(&config.Config{Pricing: config.PricingConfig{DataDir: dir, UpdateIntervalHours: 24}}, nil)
+	require.NoError(t, pricing.Initialize())
+	defer pricing.Stop()
+	h := admin.NewChannelHandler(service.NewChannelService(repo, nil, nil, pricing, nil), nil, nil)
 	router := gin.New()
 	router.GET("/maps", h.ProcurementSourceMappings)
 	router.GET("/maps/:id", h.ProcurementSourceMappings)
@@ -73,7 +84,7 @@ func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) 
 	at := time.Now().UTC().Add(-time.Minute)
 	fresh := at.Add(time.Hour)
 	snapshot := service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: at, ReceivedAt: &at, FreshUntil: &fresh,
-		Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token", "selected_group_id": item.ExternalGroupID, "resolved_rate_multiplier": 0,
+		Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token", "selected_group_id": item.ExternalGroupID, "resolved_rate_multiplier": 0, "peak_rate_enabled": false,
 			"observed_at": at.Format(time.RFC3339Nano), "rate_applicability": map[string]any{"schema_version": 1, "source_version": "http-v1", "observed_at": at, "expires_at": fresh,
 				"source": "private-discarded-source", "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "priority", "reasoning_effort": "high", "context": "all", "group_rate_applies": false, "conclusion": "covered", "private": "do-not-disclose-model-extra"}}}}}
 	raw, err := json.Marshal(snapshot)
@@ -89,6 +100,7 @@ func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) 
 	require.Equal(t, item.ExternalGroupID, receipt.Data.Evidence.Selection.GroupID)
 	require.Equal(t, "declared", receipt.Data.Evidence.Models.Status)
 	require.Equal(t, "excluded", receipt.Data.Evidence.Models.Entries[0].Conclusion, "conclusions are recomputed, never copied from the supplier")
+	require.Equal(t, "scope_not_covered", receipt.Data.Evidence.Models.Entries[0].UnitQuote.Status)
 	require.False(t, receipt.Data.Dispatchable)
 	require.Equal(t, "unverified", receipt.Data.FixedGroupSelection)
 	for _, private := range []string{"do-not-disclose-key", "private-source.example", "route_fingerprint", "private-discarded-source", "do-not-disclose-model-extra"} {
@@ -96,6 +108,26 @@ func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) 
 	}
 	require.NoError(t, db.QueryRow(`SELECT ctid::text||xmin::text||extra::text FROM accounts WHERE id=$1`, account).Scan(&afterRead))
 	require.Equal(t, beforeRead, afterRead, "reading declarations must not persist rewritten conclusions or renew evidence")
+	snapshot.Data["rate_applicability"].(map[string]any)["entries"].([]any)[0].(map[string]any)["group_rate_applies"] = true
+	snapshot.Data["resolved_rate_multiplier"] = 0.5
+	raw, err = json.Marshal(snapshot)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE accounts SET extra=jsonb_set(extra,'{upstream_billing_probe}',$2::jsonb) WHERE id=$1`, account, string(raw))
+	require.NoError(t, err)
+	require.NoError(t, db.QueryRow(`SELECT ctid::text||xmin::text||extra::text FROM accounts WHERE id=$1`, account).Scan(&beforeRead))
+	read = run("GET", fmt.Sprintf("/maps/%d", item.ID), "")
+	require.Equal(t, 200, read.Code)
+	require.NoError(t, json.Unmarshal(read.Body.Bytes(), &receipt))
+	quote := receipt.Data.Evidence.Models.Entries[0].UnitQuote
+	require.Equal(t, "estimated", quote.Status)
+	require.InDelta(t, 2.0, *quote.Components[0].Amount, 1e-12)
+	require.InDelta(t, 10.0, *quote.Components[1].Amount, 1e-12)
+	require.Zero(t, *quote.Components[2].Amount)
+	require.Len(t, quote.BaselineHash, 64)
+	require.Contains(t, quote.Pending, "supplier_components_unverified")
+	require.False(t, receipt.Data.Dispatchable)
+	require.NoError(t, db.QueryRow(`SELECT ctid::text||xmin::text||extra::text FROM accounts WHERE id=$1`, account).Scan(&afterRead))
+	require.Equal(t, beforeRead, afterRead)
 
 	for _, bad := range []string{
 		strings.Replace(body, `"confirm":true`, `"confirm":true,"confirmed":true`, 1),

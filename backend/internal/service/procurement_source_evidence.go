@@ -22,15 +22,22 @@ type ProcurementSourceSelectionEvidence struct {
 	GroupID    string     `json:"group_id"`
 	ObservedAt *time.Time `json:"observed_at"`
 	ExpiresAt  *time.Time `json:"expires_at"`
+
+	EffectiveGroupRate *float64 `json:"effective_group_rate"`
 }
 
 type ProcurementSourceModelEvidence struct {
-	Status        string                              `json:"status"`
-	Source        string                              `json:"source"`
-	SourceVersion string                              `json:"source_version"`
-	ObservedAt    *time.Time                          `json:"observed_at"`
-	ExpiresAt     *time.Time                          `json:"expires_at"`
-	Entries       []upstreamBillingApplicabilityEntry `json:"entries"`
+	Status        string                        `json:"status"`
+	Source        string                        `json:"source"`
+	SourceVersion string                        `json:"source_version"`
+	ObservedAt    *time.Time                    `json:"observed_at"`
+	ExpiresAt     *time.Time                    `json:"expires_at"`
+	Entries       []ProcurementSourceModelEntry `json:"entries"`
+}
+
+type ProcurementSourceModelEntry struct {
+	upstreamBillingApplicabilityEntry
+	UnitQuote *ProcurementSourceUnitQuote `json:"unit_quote,omitempty"`
 }
 
 // BuildProcurementSourceEvidence consumes the account, binding and declaration
@@ -39,7 +46,7 @@ type ProcurementSourceModelEvidence struct {
 func BuildProcurementSourceEvidence(row *ProcurementSourceMapping, account *Account, binding *NewAPIAccountBinding, at time.Time) *ProcurementSourceEvidence {
 	out := &ProcurementSourceEvidence{Version: 1, AssessedAt: at,
 		Selection: ProcurementSourceSelectionEvidence{Status: "unavailable", Source: "none"},
-		Models:    ProcurementSourceModelEvidence{Status: "unavailable", Entries: []upstreamBillingApplicabilityEntry{}},
+		Models:    ProcurementSourceModelEvidence{Status: "unavailable", Entries: []ProcurementSourceModelEntry{}},
 	}
 	if row == nil || account == nil || row.AccountID != account.ID || account.Type != AccountTypeAPIKey ||
 		row.AccountID < 1 || row.ID < 1 || row.AccountDeleted || row.LocalGroupDeleted || !row.Enabled || !row.SourceGroupEnabled ||
@@ -111,6 +118,10 @@ func BuildProcurementSourceEvidence(row *ProcurementSourceMapping, account *Acco
 		}
 		out.Selection.Status = "receipt_confirmed"
 	}
+	if peak, ok := upstreamBillingPeakMultiplierAt(data, at); ok && newAPIFinite(rate*peak) {
+		effective := rate * peak
+		out.Selection.EffectiveGroupRate = &effective
+	}
 	declaration, present := upstreamBillingApplicabilityFromData(data)
 	if !present {
 		out.Models.Status = "not_declared"
@@ -131,7 +142,10 @@ func BuildProcurementSourceEvidence(row *ProcurementSourceMapping, account *Acco
 		return out
 	}
 	declaration.setConclusions(at) // reuse the same exact-scope verdict as final sending
-	out.Models.Status, out.Models.Entries = "declared", declaration.Entries
+	out.Models.Status = "declared"
+	for _, entry := range declaration.Entries {
+		out.Models.Entries = append(out.Models.Entries, ProcurementSourceModelEntry{upstreamBillingApplicabilityEntry: entry})
+	}
 	return out
 }
 

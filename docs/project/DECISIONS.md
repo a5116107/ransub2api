@@ -4859,3 +4859,15 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - Windows四包race：`go test -race -p 1 -parallel 2 ./internal/service ./internal/repository ./internal/handler/admin ./internal/server/routes -run 'Test(ProcurementSource|NewAPI|UpstreamGroupCatalog|ChannelOperationsRoutes)' -count=1`全部通过；补充Gemini单元例后服务聚焦race再过（1.247s）。同四包integration-tag vet exit0，增量fast lint 0 issues。Linux只读挂载唯一源码、复用共享Go缓存和自动go1.27.4，四包同范围聚焦全部pass；不把此项称为Linux数据库/race或完整混版验收。Linux工具链冷启动在Windows绑定目录产生大量元数据I/O，完成后task容器自动移除，无第二源码副本。
 - 原前端入口展示采购组核对、分项适用/排除、模型/协议/档位搜索和分页；版本、来源、外部组、期限和不可用旧条目响应边界有回归。四套Vitest198pass，类型/四文件ESLint exit0。原Edge夹具切到标准Vite源，中英390/1440px共40检查通过，页面异常/未预期API/外站请求0，含键盘、错组/过期/失败撤旧范围和恢复；接口为隔离夹具，持久化由真实HTTP/PG另验。没有往受限dist再构建或重试删除；任务Vite监听已停止。
 - 设计12.1.13与STATE同步；仅提交本任务文件/文档段落，首页、图册及旧设计草稿保留。单功能PR约束保持，不CI/PR/发行/部署。A2真实逐请求固定组选路、B模型分项成本、C/D产品资格/候选消费及生产加载仍开放；供应商/接入方补业务组选路回执和模型/Fast分项报价适用契约后继续，不把组价声明或前端卡片当作完整资格。
+
+## 2026-11-28：D7.4-B1 分项目录价测算与缺价边界
+
+- 承接“继续推进任务”，在原来源清册模型/档位读模型增加输入、输出、缓存读取/写入四项每百万Token的本地价目测算。复用原PricingService目录、原BillingService目录转换/Token计算；原转换代码抽为有两个实际调用点的helper，未保留平行计费器。无schema迁移，不改D、margin/buffer、原倍率门、成员或调度。B1完整共同基准/分项合同和B2准入仍待，原28项20done/8partial不变。
+- 明确标注“本地目录价测算·供应商分项待核”，仅固定组/同模型档有效且covered时计算。U只用本次探测回执的实时高峰倍率，不借Account C或保存倍率。当前本地价目内容摘要/更新时间不是供应商确认的官方版本；分项基准、缓存折扣/时长、长上下文、图片/工具及其他费用继续未核。不以测算值或covered放行自动产品，也不称现金成本/利润已核。
+- 精确目录键查价不走型号系列、去尾版本或fallback；厂商不符/未适配、未知计量档分别解释。沿原解析器保留八个普通/Fast字段的显式非负有限数值存在性，0与缺失/null/负数、重复/大小写别名分开。旧计费的case-insensitive兼容不改，但带歧义字段不进测算；原native policy与目录字段不同也不给估价。Fast缺分项不借普通价或默认2x；一Token经原计费计算后仅缩放展示单位，避免百万Token样本误触发长上下文。
+- 单测先因未实现符号失败后实现；新增TypeScript校验器括号错误已修复。UI用例初次mock缺locale ref造成渲染错误，补齐真实useI18n契约后通过；浏览器初次断言“分项待核”而实际文案为“缺项待核”，修正夹具断言，不更改产品结论来迁就测试。原断言及失败输出未当作通过。
+- Windows真实命令`go test -race -p 1 -parallel 2 ./internal/service -run 'Test.*(Billing|Pricing|ProcurementSource|NewAPI|UpstreamGroup)' -count=1 -timeout=8m -json`，2107条test pass/0fail/skip，含子例，非2107个独立场景；最后字段歧义补充后服务聚焦race再过（1.265s）。覆盖完整/缺价/0/Fast、原native policy差异、过期撤估价、内容摘要变化、不改共享价目、并发热加载一致性。四包integration-tag vet和最后服务vet exit0；增量fast lint 0 issues。
+- 真实PG18/Redis8原清册/报价集成race：21条test pass/0fail/skip（46.203s），含100站点/200来源两页与厂商/搜索442.7ms。管理HTTP使用本地原目录loader→真实PG快照→原GET投影，先排除范围不估价、改为covered后优先档输入2/输出10/缓存读取0且分项待核，账号extra/ctid/xmin不变、来源资格仍false；固定组/失败/恢复/轮换及原权限/脱敏仍过。
+- Linux只读挂载唯一源码、复用既有Go模块/构建缓存，以go1.27.4运行相关四包计费/报价聚焦全部通过；最后大小写歧义修改另跑服务聚焦exit0/0.030s。非Linux数据库/race或生产验收；任务容器自动移除。前端四套Vitest212pass，类型/四路径ESLint exit0。原Edge/Vite夹具中英390/1440px共44检查通过，异常/未预期API/外站请求0；含分项数字、0/未知、版本、键盘、分组/模型撤旧及恢复。浏览器接口为隔离夹具，持久化由真实HTTP/PG另验。
+- 未向拒删dist写新构建、未重试删除或移动；原约925MB及其他拒删项保持STATE等待。Vite已停，未留任务监听/源码副本；共享缓存与最小证据保留。仅提交本任务文件及设计12.1.14/状态/本条决策，首页、图册及旧设计草稿不夹带；不CI/PR/发行/部署，仍为一个功能PR研发线。
+- 下一依赖仍是供应商/接入方提供同模型/协议/档位及输入输出缓存分项的共同价格基准和业务请求选组回执，再接B2严格成本/产品消费；不以缺少外部合同为由把目录测算升级为已核资格。

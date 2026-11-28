@@ -3,9 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-A2 | H:/Root/jiaoben/01_AI接口与网关/sub2api | feat/automated-upstream-supply basef9537e1ad.
-Win/Linux/PG42/UI198/Edge40/vet/lint pass. Source-group/model evidence verified; business routing/product pending.
-28/20/8; no CI/PR/release/deploy. Scratch waits retained; see design12.1.13.
+B1 | H:/Root/jiaoben/01_AI接口与网关/sub2api | feat/automated-upstream-supply base218fa4868.
+Unit estimate verified: Win2107+focused/Linux/PG21/UI212/Edge44/vet/lint. See design12.1.14.
+28/20/8; supplier component basis and business routing pending. No CI/PR/release/deploy; scratch waits retained.
 <!-- resume:end -->
 
 ## 目标与入口
@@ -36,7 +36,7 @@ Win/Linux/PG42/UI198/Edge40/vet/lint pass. Source-group/model evidence verified;
 | D4.1 | done | 双故障/账号消失拒绝、回源与未装门边界，专项/完整回归 |
 | D4.2 | done | 配置失败/错组拒绝，HTTP/WS/免费及恢复；默认标签/vet/Linux完整通过 |
 | M1–M13 | done | 原清理/分页/依赖保持；图片测试隔离/关闭回收已验 |
-| D4 | in_progress | 原配置门/共享观察/候选与草稿预演/模板已本地验；完整资格/自动关联/重算仍缺 |
+| D4 | in_progress | 原倍率门/终检及分项目录价测算已验；严格分项合同/准入待核 |
 | D4.3.1–.6 | done | 区间/目录/来源/桶/CAS与SQL/终检/UI已验；非完整资格/生产 |
 | D4.3.7–.10 | done | v4–v6答题/可用/交集与期限、当前来源、SQL/HTTP/WS/UI/区域已验；非完整资格/自动关联/生产，详DECISIONS |
 | D4.3.11 | done | 差量关系/事务通知/并发及移出重加已验；144+147pass，权限补DSN29pass；非自动协调器 |
@@ -55,7 +55,7 @@ Win/Linux/PG42/UI198/Edge40/vet/lint pass. Source-group/model evidence verified;
 | D5.4.1 | done | 原生OpenAI Key/模型HTTP同路探测及中英UI本地已验；非缓存域/严格资格 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/来源及同路探测已本地验；实际组/其余scope/缓存域/存活与资格仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
-| D7 | in_progress | 登记/报价/组证据与模型档读模型已验；业务路由与接管待验 |
+| D7 | in_progress | 来源/组/模型档及分项目录价面板已验；业务路由与接管待验 |
 | D7.4-A1 | done | 外部组≠本地Group；财务实体不复用路由，登记不授予资格；见设计12.1.10十 |
 | D7.4-A2 | in_progress | 组声明/报价回执/模型档读模型已验；业务选组及产品消费待验 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |

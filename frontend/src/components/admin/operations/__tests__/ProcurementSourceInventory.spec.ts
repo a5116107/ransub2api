@@ -1,12 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, ref } from 'vue'
 import Inventory from '../ProcurementSourceInventory.vue'
 import { listProcurementSources, createProcurementSource, getProcurementSource, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, type ProcurementSourceMapping, type ProcurementSourcePage, type UpstreamGroupCatalogView } from '@/api/admin/procurementSources'
 import { list as listGroups } from '@/api/admin/groups'
 import { list as listAccounts } from '@/api/admin/accounts'
 
-vi.mock('vue-i18n', async importOriginal => ({ ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', async importOriginal => ({ ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string) => key, locale: ref('en') }) }))
 vi.mock('@/api/admin/procurementSources', () => ({ listProcurementSources: vi.fn(), createProcurementSource: vi.fn(), getProcurementSource: vi.fn(), setProcurementSourceEnabled: vi.fn(), deleteProcurementSource: vi.fn(), getUpstreamGroupCatalog: vi.fn() }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
 vi.mock('@/api/admin/accounts', () => ({ list: vi.fn() }))
@@ -69,6 +69,18 @@ async function draft(w: ReturnType<typeof mount>) {
 }
 
 describe('source registration in the existing operations page', () => {
+  it('shows server-computed unit estimates with zero versus unknown and no qualified status', async () => {
+    const next = evidencePage(), e = next.items[0]!.evidence!
+    e.selection.effective_group_rate = 0.5
+    e.models.entries[0]!.unit_quote = { version: 1, status: 'partial', currency: 'USD', unit: 'per_1m_tokens_base_context', baseline_hash: 'b'.repeat(64), catalog_updated_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T00:10:00Z', effective_group_rate: .5,
+      components: [{ code: 'input', status: 'estimated', amount: 1 }, { code: 'output', status: 'estimated', amount: 5 }, { code: 'cache_read', status: 'estimated', amount: 0 }, { code: 'cache_write', status: 'not_declared', amount: null }], pending: ['supplier_baseline_unverified', 'supplier_components_unverified', 'other_components_unreviewed'] }
+    vi.mocked(listProcurementSources).mockResolvedValue(next)
+    const w = await view(), quote = w.get('[data-testid="source-unit-quote"]')
+    expect(quote.text()).toContain('upstreamOps.sources.unitQuote.states.partial')
+    expect(quote.findAll('[data-testid="source-unit-amount"]').map(row => row.text())).toEqual(['1', '5', '0', '—'])
+    expect(quote.text()).toContain('upstreamOps.sources.unitQuote.scope')
+    expect(w.get('[data-testid="source-conclusion"]').text()).toContain('pending_verification')
+  })
   it('distinguishes matching supplier declarations from business proof and shows per-tier exclusions', async () => {
     vi.mocked(listProcurementSources).mockResolvedValue(evidencePage())
     const w = await view()

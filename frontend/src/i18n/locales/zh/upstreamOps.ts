@@ -1,5 +1,35 @@
 export default {
   sources: {
+    unitQuote: {
+      "title": "分项目录价测算",
+      "scope": "仅按当前本地价目与组倍率测算，不是供应商账单或已核成本。供应商分项基准、缓存折扣、长上下文及其他费用仍待核对，不据此放行产品。",
+      "unit": "美元 / 百万 Token · 仅基础上下文档",
+      "groupRate": "本次生效组倍率：",
+      "updated": "本地价目更新时间：",
+      "version": "查看本地基准摘要（非供应商确认）",
+      "components": {
+        "input": "输入",
+        "output": "输出",
+        "cache_read": "缓存读取",
+        "cache_write": "缓存写入"
+      },
+      "componentStates": {
+        "not_declared": "该档价格未明确声明",
+        "billing_policy_differs": "原计费规则与目录字段不同，暂不估价"
+      },
+      "states": {
+        "estimated": "已测算 · 分项待核",
+        "partial": "部分有价 · 缺项待核",
+        "scope_not_covered": "本范围不适用",
+        "evidence_expired": "组或模型证据已失效",
+        "rate_unavailable": "当前组倍率未确认",
+        "catalog_unavailable": "本地价目未就绪",
+        "model_not_exact": "模型没有精确价目",
+        "provider_mismatch": "价目厂商未对应",
+        "unsupported_scope": "此档或计量方式尚未覆盖",
+        "invalid_catalog": "价目异常"
+      }
+    },
     evidence: {
       "selectionTitle": "采购组核对",
       "modelsTitle": "模型报价范围",
