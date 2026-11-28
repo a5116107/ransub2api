@@ -118,8 +118,11 @@ type newAPIData struct {
 	wallet       float64
 	ratios       map[string]float64
 	publicRatios map[string]float64
+	publicOK     bool
 	tokens       []NewAPIToken
 	pricing      json.RawMessage
+	catalog      []UpstreamGroupQuote
+	catalogOK    bool
 }
 
 func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
@@ -249,9 +252,12 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 		var ratios map[string]*float64
 		if valid && fields["success"].Type == gjson.True && ratiosValid && json.Unmarshal([]byte(fields["group_ratio"].Raw), &ratios) == nil {
 			result.pricing = pricing
+			result.publicOK = true
 			for g, r := range ratios {
 				if r != nil && validNewAPIGroupRate(g, *r) {
 					result.publicRatios[g] = *r
+				} else if g != "auto" {
+					result.publicOK = false
 				}
 			}
 		}
@@ -269,15 +275,11 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 		err = s.newAPIRequest(ctx, a, site, userID, secret, "GET", "/api/user/groups", &groups)
 	}
 	if err == nil {
-		fields, valid := availabilityJSONObject(gjson.ParseBytes(groups))
-		if entries, ok := availabilityJSONObject(fields["data"]); valid && ok && len(entries) <= 1024 && fields["success"].Type == gjson.True {
-			for group, raw := range entries {
-				entry, unique := availabilityJSONObject(raw)
-				rate := entry["ratio"]
-				if unique && rate.Type == gjson.Number && validNewAPIGroupRate(group, rate.Float()) {
-					result.ratios[group] = rate.Float()
-				}
-			}
+		result.catalog, result.catalogOK = parseNewAPIGroupCatalog(groups, result.publicRatios)
+		// An unrelated group's invalid price makes the whole directory
+		// incomplete, but must not erase a valid bound group's own evidence.
+		for _, group := range result.catalog {
+			result.ratios[group.ID] = *group.PersonalRate
 		}
 	} else if newAPIRequestRequiresWait(err) || monitoringProbeDeferral(err, s.currentTime()) != nil {
 		return nil, err

@@ -50,6 +50,32 @@
                   <div v-for="code in item.reasons.slice(1)" :key="code"><dd>{{ reason(code) }}</dd></div>
                   <div><dt class="inline">{{ t(p + '.updated') }}：</dt><dd class="inline">{{ item.updated_at }}</dd></div>
                 </dl></details>
+                <details v-if="item.account_id && !item.account_deleted" class="min-w-0 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" :data-testid="`source-quote-${item.account_id}`" @toggle="quoteOpened($event, item.account_id)">
+                  <summary class="cursor-pointer font-medium">{{ t(p + '.catalog.title') }}</summary>
+                  <div class="mt-3 min-w-0 space-y-3">
+                    <button type="button" class="btn btn-secondary" :disabled="quoteReading[item.account_id]" data-testid="source-quote-refresh" @click="readQuote(item.account_id)">{{ t(p + '.catalog.read') }}</button>
+                    <p v-if="quoteReading[item.account_id]" role="status">{{ t('common.loading') }}</p>
+                    <p v-else-if="quoteErrors[item.account_id]" role="alert" class="text-red-600 dark:text-red-400">{{ t(p + '.catalog.failed') }}</p>
+                    <template v-else-if="quotes[item.account_id]">
+                      <p class="font-medium" :class="quotes[item.account_id]!.catalog.status === 'ok' ? 'text-primary-700 dark:text-primary-300' : 'text-amber-700 dark:text-amber-300'" data-testid="source-quote-status">{{ t(p + '.catalog.states.' + quotes[item.account_id]!.catalog.status) }}</p>
+                      <p class="text-xs text-gray-500">{{ t(p + '.catalog.' + quotes[item.account_id]!.catalog.scope) }}</p>
+                      <p v-if="quotes[item.account_id]!.catalog.received_at" class="break-words text-xs text-gray-500">{{ t(p + '.catalog.lastRead') }} {{ formatDateTimeToMinute(quotes[item.account_id]!.catalog.received_at, locale) }} · {{ t(p + '.catalog.expires') }} {{ formatDateTimeToMinute(quotes[item.account_id]!.catalog.fresh_until, locale) }}</p>
+                      <label class="block">{{ t(p + '.catalog.find') }}<input v-model="quoteSearch[item.account_id]" class="input mt-1 w-full" maxlength="256" @input="quotePages[item.account_id] = 1" /></label>
+                      <div v-for="groupQuote in visibleQuotes(item.account_id)" :key="groupQuote.id" class="min-w-0 space-y-1 rounded-lg bg-gray-50 p-3 dark:bg-dark-800">
+                        <p class="break-words font-medium">{{ groupQuote.name || groupQuote.id }}</p><p class="break-all text-xs text-gray-500">{{ groupQuote.id }}</p>
+                        <dl class="flex flex-wrap gap-x-5 gap-y-1"><div><dt class="text-xs text-gray-500">{{ t(p + '.catalog.personal') }}</dt><dd class="font-medium" data-testid="source-personal-rate">{{ quoteRate(groupQuote.personal_rate) }}</dd></div><div><dt class="text-xs text-gray-500">{{ t(p + '.catalog.public') }}</dt><dd data-testid="source-public-rate">{{ quoteRate(groupQuote.public_rate) }}</dd></div></dl>
+                      </div>
+                      <p v-if="!filteredQuotes(item.account_id).length" class="text-gray-500">{{ t(p + '.catalog.empty') }}</p>
+                      <nav v-if="filteredQuotes(item.account_id).length > 20" class="flex flex-wrap items-center gap-2" :aria-label="t(p + '.catalog.pagination')"><button type="button" class="btn btn-secondary" :disabled="(quotePages[item.account_id] ?? 1) <= 1" @click="quotePages[item.account_id] = (quotePages[item.account_id] ?? 1) - 1">{{ t('upstreamOps.previous') }}</button><span>{{ quotePages[item.account_id] ?? 1 }} / {{ Math.ceil(filteredQuotes(item.account_id).length / 20) }}</span><button type="button" class="btn btn-secondary" :disabled="(quotePages[item.account_id] ?? 1) * 20 >= filteredQuotes(item.account_id).length" @click="quotePages[item.account_id] = (quotePages[item.account_id] ?? 1) + 1">{{ t('upstreamOps.next') }}</button></nav>
+                      <details><summary class="cursor-pointer">{{ t(p + '.catalog.changes') }} · {{ quotes[item.account_id]!.catalog.changes.length }}</summary>
+                        <p class="mt-2 text-xs text-gray-500">{{ t(p + '.catalog.historyLimit') }}</p>
+                        <p v-if="!quotes[item.account_id]!.catalog.changes.length" class="mt-2 text-xs text-gray-500">{{ t(p + '.catalog.noChanges') }}</p>
+                        <ol class="mt-2 space-y-2"><li v-for="(change, index) in quotes[item.account_id]!.catalog.changes" :key="index" class="break-words rounded bg-gray-50 p-2 text-xs dark:bg-dark-800"><span class="font-medium">{{ t(p + '.catalog.kinds.' + change.kind) }}</span> · {{ change.group_id }} · {{ formatDateTimeToMinute(change.at, locale) }}<br />{{ t(p + '.catalog.personal') }} {{ quoteRate(change.before?.personal_rate ?? null) }} → {{ quoteRate(change.after?.personal_rate ?? null) }}<template v-if="change.before?.name !== change.after?.name"><br />{{ change.before?.name || '—' }} → {{ change.after?.name || '—' }}</template><template v-if="change.before?.public_rate !== change.after?.public_rate"><br />{{ t(p + '.catalog.public') }} {{ quoteRate(change.before?.public_rate ?? null) }} → {{ quoteRate(change.after?.public_rate ?? null) }}</template></li></ol>
+                      </details>
+                      <div class="space-y-1 border-t border-gray-200 pt-3 text-xs dark:border-dark-600"><p class="font-medium">{{ t(p + '.catalog.impact') }}</p><p class="text-gray-500">{{ t(p + '.catalog.impactScope') }}</p><p>{{ t(p + '.catalog.sources') }}：{{ quotes[item.account_id]!.impact.sources.map(row => row.name).join(' · ') || '—' }}</p><p>{{ t(p + '.catalog.products') }}：{{ quotes[item.account_id]!.impact.products.map(row => row.name).join(' · ') || '—' }}</p><p v-if="quotes[item.account_id]!.impact.truncated" class="text-amber-700 dark:text-amber-300">{{ t(p + '.catalog.truncated') }}</p></div>
+                    </template>
+                  </div>
+                </details>
                 <div v-if="item.id" class="flex flex-wrap gap-3 text-xs">
                   <a href="/admin/accounts" class="text-primary-700 underline dark:text-primary-300">{{ t(p + '.openAccount') }}</a>
                   <button type="button" :disabled="saving || uncertain" class="text-primary-700 underline disabled:opacity-50 dark:text-primary-300" @click="pending = { item, kind: 'toggle' }">{{ t(p + (item.enabled ? '.pause' : '.resume')) }}</button>
@@ -76,21 +102,43 @@ import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
+import { formatDateTimeToMinute } from '@/utils/format'
 import { list as listGroups } from '@/api/admin/groups'
 import { list as listAccounts } from '@/api/admin/accounts'
 import {
-  listProcurementSources, createProcurementSource, getProcurementSource, setProcurementSourceEnabled, deleteProcurementSource,
-  type ProcurementSourceMapping, type ProcurementSourcePage, type CreateProcurementSourceMapping
+  listProcurementSources, createProcurementSource, getProcurementSource, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog,
+  type ProcurementSourceMapping, type ProcurementSourcePage, type CreateProcurementSourceMapping, type UpstreamGroupCatalogView
 } from '@/api/admin/procurementSources'
 import type { AccountListItem, AdminGroup, GroupPlatform } from '@/types'
 
-const { t } = useI18n(), p = 'upstreamOps.sources'
+const { t, locale } = useI18n(), p = 'upstreamOps.sources'
 const search = ref(''), filterPlatform = ref(''), snapshot = ref<ProcurementSourcePage | null>(null)
 const reading = ref(false), saving = ref(false), showForm = ref(false), consent = ref(false), uncertain = ref(false), error = ref(''), optionsError = ref(false)
 const saved = ref<ProcurementSourceMapping | null>(null)
 const draft = reactive({ site_code: '', site_name: '', platform: 'openai', external_group_id: '', external_group_name: '', local_group_id: 0, account_id: 0 })
 const groups = ref<AdminGroup[]>([]), accounts = ref<AccountListItem[]>([]), groupsLoading = ref(false), accountsLoading = ref(false)
 const pending = ref<{ item: ProcurementSourceMapping; kind: 'remove' | 'toggle' } | null>(null)
+const quotes = reactive<Record<number, UpstreamGroupCatalogView | undefined>>({}), quoteErrors = reactive<Record<number, boolean>>({}), quoteReading = reactive<Record<number, boolean>>({})
+const quotePages = reactive<Record<number, number>>({}), quoteSearch = reactive<Record<number, string>>({})
+const quoteControllers = new Map<number, AbortController>()
+function quoteOpened(event: Event, id: number) { if ((event.target as HTMLDetailsElement).open && !quotes[id] && !quoteReading[id]) void readQuote(id) }
+async function readQuote(id: number) {
+  quoteControllers.get(id)?.abort()
+  const abort = new AbortController(); quoteControllers.set(id, abort)
+  quoteReading[id] = true; quoteErrors[id] = false; delete quotes[id]; quotePages[id] = 1
+  try {
+    const read = await getUpstreamGroupCatalog(id, abort.signal)
+    if (alive && quoteControllers.get(id) === abort) quotes[id] = read
+  } catch {
+    if (alive && !abort.signal.aborted) quoteErrors[id] = true
+  } finally {
+    if (quoteControllers.get(id) === abort) { quoteReading[id] = false; quoteControllers.delete(id) }
+  }
+}
+const quoteRate = (rate: number | null) => rate === null ? '—' : String(rate)
+const filteredQuotes = (id: number) => (quotes[id]?.catalog.groups ?? []).filter(row => `${row.id} ${row.name}`.toLowerCase().includes((quoteSearch[id] ?? '').trim().toLowerCase()))
+const visibleQuotes = (id: number) => filteredQuotes(id).slice(((quotePages[id] ?? 1) - 1) * 20, (quotePages[id] ?? 1) * 20)
+function clearQuotes() { quoteControllers.forEach(controller => controller.abort()); quoteControllers.clear(); for (const state of [quotes, quoteErrors, quoteReading, quotePages, quoteSearch]) for (const key of Object.keys(state)) delete state[Number(key)] }
 let alive = true, hasOpened = false, generation = 0, groupsGeneration = 0, accountsGeneration = 0
 let controller: AbortController | undefined, groupsController: AbortController | undefined, accountsController: AbortController | undefined
 watch(() => draft.platform, () => { draft.local_group_id = 0; groups.value = []; groupsController?.abort(); groupsGeneration++ })
@@ -121,6 +169,7 @@ const statusClass = (item: ProcurementSourceMapping) => item.conclusion === 'blo
 const status = (e: unknown) => (e as { status?: number; response?: { status?: number } })?.status ?? (e as { response?: { status?: number } })?.response?.status
 async function load(page = 1, explicit = false): Promise<boolean> {
   const seq = ++generation
+  clearQuotes()
   controller?.abort(); controller = new AbortController()
   reading.value = true; error.value = ''; snapshot.value = null
   try {
@@ -190,5 +239,5 @@ async function mutate() {
   } catch (e) { if (alive) { snapshot.value = null; uncertain.value = true; error.value = status(e) === 409 ? 'conflict' : 'saveUnconfirmed' } }
   finally { if (alive) saving.value = false }
 }
-onBeforeUnmount(() => { alive = false; generation++; controller?.abort(); groupsGeneration++; groupsController?.abort(); accountsGeneration++; accountsController?.abort() })
+onBeforeUnmount(() => { alive = false; clearQuotes(); generation++; controller?.abort(); groupsGeneration++; groupsController?.abort(); accountsGeneration++; accountsController?.abort() })
 </script>

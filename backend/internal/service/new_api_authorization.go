@@ -356,6 +356,16 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 			snap = failed
 		}
 	}
+	snap.CatalogObservation = &UpstreamGroupCatalog{Version: 1, Provider: "new_api", Scope: "management_user", AuthorizationRevision: b.Profile.Revision, Status: "failed", AttemptedAt: now}
+	if data.catalogOK {
+		snap.CatalogObservation.Status = "ok"
+		snap.CatalogObservation.Groups = data.catalog
+		snap.CatalogObservation.ReceivedAt = probeTimePtr(s.currentTime().UTC())
+		snap.CatalogObservation.FreshUntil = probeTimePtr(s.currentTime().UTC().Add(2 * time.Duration(interval) * time.Minute))
+	}
+	if data.publicOK {
+		snap.CatalogObservation.PublicStatus = "ok"
+	}
 	return s.persistNewAPISnapshot(ctx, a, b, snap)
 }
 
@@ -385,6 +395,7 @@ func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, 
 	snap.ReceivedAt = nil
 	snap.FreshUntil = nil
 	snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: reason}
+	snap.CatalogObservation = &UpstreamGroupCatalog{Version: 1, Provider: "new_api", Scope: "management_user", AuthorizationRevision: b.Profile.Revision, Status: "failed", AttemptedAt: now}
 	return s.persistNewAPISnapshot(ctx, a, b, snap)
 }
 

@@ -19,9 +19,44 @@ export interface CreateProcurementSourceMapping {
   external_group_id: string; external_group_name: string; local_group_id: number; account_id: number; confirm: true
 }
 
+export interface UpstreamGroupQuote { id: string; name: string; personal_rate: number | null; public_rate: number | null }
+export interface UpstreamGroupChange { kind: 'group_added' | 'group_removed' | 'group_updated'; group_id: string; at: string; before: UpstreamGroupQuote | null; after: UpstreamGroupQuote | null }
+export interface UpstreamGroupCatalogView {
+  version: 1; account_id: number; platform: string; user_id: number | null; observed_at: string
+  catalog: {
+    version: 1; provider: 'new_api' | 'sub2api'; scope: 'management_user' | 'call_key'
+    status: 'ok' | 'failed' | 'expired' | 'not_observed' | 'authorization_changed'
+    attempted_at: string; received_at: string | null; fresh_until: string | null
+    groups: UpstreamGroupQuote[]; changes: UpstreamGroupChange[]
+  }
+  impact: { sources: Array<{ id: number; name: string }>; products: Array<{ id: number; name: string }>; truncated: boolean }
+}
+
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const integer = (value: unknown, min = 1): value is number => Number.isSafeInteger(value) && (value as number) >= min
 const instant = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
+
+export function validUpstreamGroupCatalog(value: unknown): value is UpstreamGroupCatalogView {
+  const rate = (v: unknown) => v === null || typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e6
+  const quote = (v: unknown) => record(v) && typeof v.id === 'string' && v.id.length > 0 && v.id.length <= 256 && typeof v.name === 'string' && rate(v.personal_rate) && rate(v.public_rate)
+  if (!record(value) || value.version !== 1 || !integer(value.account_id) || typeof value.platform !== 'string' || !instant(value.observed_at) || !record(value.catalog) || !record(value.impact)) return false
+  const c = value.catalog, impact = value.impact
+  return c.version === 1 && ['ok', 'failed', 'expired', 'not_observed', 'authorization_changed'].includes(String(c.status)) &&
+    (c.provider === 'new_api' && c.scope === 'management_user' && integer(value.user_id) || c.provider === 'sub2api' && c.scope === 'call_key' && value.user_id === null) &&
+    instant(c.attempted_at) && (c.received_at === null || instant(c.received_at)) && (c.fresh_until === null || instant(c.fresh_until)) &&
+    (c.status !== 'ok' || instant(c.received_at) && instant(c.fresh_until) && Date.parse(c.fresh_until) > Date.parse(c.received_at) && Date.parse(c.fresh_until) > Date.parse(value.observed_at)) &&
+    Array.isArray(c.groups) && c.groups.length <= 1024 && c.groups.every(quote) && new Set(c.groups.map(g => g.id)).size === c.groups.length &&
+    Array.isArray(c.changes) && c.changes.length <= 100 && c.changes.every(v => record(v) && ['group_added', 'group_removed', 'group_updated'].includes(String(v.kind)) && typeof v.group_id === 'string' && instant(v.at) &&
+      (v.before === null || quote(v.before) && record(v.before) && v.before.id === v.group_id) && (v.after === null || quote(v.after) && record(v.after) && v.after.id === v.group_id) &&
+      (v.kind === 'group_added' ? v.before === null && v.after !== null : v.kind === 'group_removed' ? v.before !== null && v.after === null : v.before !== null && v.after !== null)) &&
+    ['sources', 'products'].every(key => Array.isArray(impact[key]) && impact[key].length <= 100 && impact[key].every(v => record(v) && integer(v.id) && typeof v.name === 'string')) && typeof impact.truncated === 'boolean'
+}
+
+export async function getUpstreamGroupCatalog(accountID: number, signal?: AbortSignal): Promise<UpstreamGroupCatalogView> {
+  const { data } = await apiClient.get<unknown>(`/admin/accounts/${accountID}/upstream-billing-probe/catalog`, { signal })
+  if (!validUpstreamGroupCatalog(data) || data.account_id !== accountID) throw new Error('Invalid upstream group quotation response')
+  return data
+}
 
 export function validProcurementSourceMapping(value: unknown): value is ProcurementSourceMapping {
   if (!record(value)) return false

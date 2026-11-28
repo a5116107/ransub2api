@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
-import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, type ProcurementSourceMapping } from '../procurementSources'
+import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, validUpstreamGroupCatalog, type UpstreamGroupCatalogView, type ProcurementSourceMapping } from '../procurementSources'
 
 vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }))
 export const sourceFixture = (): ProcurementSourceMapping => ({
@@ -12,9 +12,41 @@ export const sourceFixture = (): ProcurementSourceMapping => ({
   route_identity: 'current', source_identity: 'declared', fixed_group_selection: 'unverified', dispatchable: false
 })
 const page = () => ({ version: 1, observed_at: '2026-11-28T00:00:00Z', items: [sourceFixture()], total: 1, page: 1, page_size: 20 })
+const quotation = (): UpstreamGroupCatalogView => ({ version: 1, account_id: 9, platform: 'openai', user_id: 7, observed_at: '2026-11-28T00:00:00Z', catalog: {
+  version: 1, provider: 'new_api', scope: 'management_user', status: 'ok', attempted_at: '2026-11-28T00:00:00Z', received_at: '2026-11-28T00:00:00Z', fresh_until: '2026-11-28T01:00:00Z', groups: [{ id: 'vip', name: 'VIP', personal_rate: 0, public_rate: 0.5 }], changes: []
+}, impact: { sources: [], products: [], truncated: false } })
 beforeEach(() => vi.resetAllMocks())
 
 describe('administrator-only source declaration contract', () => {
+  it('reads persisted quotation data with a cancellation signal and keeps explicit zero', async () => {
+    const signal = new AbortController().signal
+    vi.mocked(apiClient.get).mockResolvedValue({ data: quotation() })
+    expect((await getUpstreamGroupCatalog(9, signal)).catalog.groups[0]?.personal_rate).toBe(0)
+    expect(apiClient.get).toHaveBeenCalledWith('/admin/accounts/9/upstream-billing-probe/catalog', { signal })
+    await expect(getUpstreamGroupCatalog(10)).rejects.toThrow()
+  })
+  it.each(['negative', 'nonfinite', 'missing-price', 'duplicate-id', 'future-version', 'unknown-state', 'wrong-scope', 'missing-user', 'expired-ttl'])('rejects malformed quotation results: %s', async mode => {
+    const q = quotation()
+    if (mode === 'negative') q.catalog.groups[0]!.personal_rate = -1
+    if (mode === 'nonfinite') q.catalog.groups[0]!.personal_rate = Infinity
+    if (mode === 'missing-price') delete (q.catalog.groups[0] as Partial<typeof q.catalog.groups[0]>)!.personal_rate
+    if (mode === 'duplicate-id') q.catalog.groups.push({ ...q.catalog.groups[0]! })
+    if (mode === 'future-version') Object.assign(q.catalog, { version: 2 })
+    if (mode === 'unknown-state') Object.assign(q.catalog, { status: 'qualified' })
+    if (mode === 'wrong-scope') q.catalog.scope = 'call_key'
+    if (mode === 'missing-user') q.user_id = null
+    if (mode === 'expired-ttl') q.catalog.fresh_until = q.catalog.received_at
+    expect(validUpstreamGroupCatalog(q)).toBe(false)
+    vi.mocked(apiClient.get).mockResolvedValue({ data: q })
+    await expect(getUpstreamGroupCatalog(9)).rejects.toThrow()
+  })
+  it('keeps failed last-observed quotations distinct from a current successful zero', () => {
+    const q = quotation()
+    q.catalog.status = 'failed'
+    expect(validUpstreamGroupCatalog(q)).toBe(true)
+    q.catalog.groups[0]!.personal_rate = null
+    expect(validUpstreamGroupCatalog(q)).toBe(true)
+  })
   it('reads the explicit site/group mapping without coercing external IDs', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({ data: page() })
     const signal = new AbortController().signal

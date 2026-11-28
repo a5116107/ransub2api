@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strconv"
@@ -174,7 +175,13 @@ func (r *newAPIAuthorizationRepository) WriteSnapshot(ctx context.Context, a *se
 	}
 	defer func() { _ = tx.Rollback() }()
 	var revision int64
-	if e = tx.QueryRowContext(ctx, `SELECT revision FROM new_api_site_authorizations WHERE id=$1 FOR SHARE`, b.Profile.ID).Scan(&revision); e != nil {
+	var catalog []byte
+	if snap.CatalogObservation == nil {
+		e = tx.QueryRowContext(ctx, `SELECT revision FROM new_api_site_authorizations WHERE id=$1 FOR SHARE`, b.Profile.ID).Scan(&revision)
+	} else {
+		e = tx.QueryRowContext(ctx, `SELECT revision,group_catalog FROM new_api_site_authorizations WHERE id=$1 FOR UPDATE`, b.Profile.ID).Scan(&revision, &catalog)
+	}
+	if e != nil {
 		return e
 	}
 	if revision != b.Profile.Revision {
@@ -205,6 +212,24 @@ func (r *newAPIAuthorizationRepository) WriteSnapshot(ctx context.Context, a *se
 	}
 	if n != 1 {
 		return service.ErrUpstreamBillingProbeIdentityChanged
+	}
+	if snap.CatalogObservation != nil {
+		previous, err := decodeGroupCatalog(catalog)
+		if err != nil {
+			// A future or malformed observation is not a reason to stop the
+			// existing billing refresh. Keep it unreadable and untouched; never
+			// overwrite it with a fabricated empty baseline or log its contents.
+			slog.Warn("upstream_group_catalog_invalid", "authorization_id", b.Profile.ID)
+		} else {
+			merged := service.MergeUpstreamGroupCatalog(previous, snap.CatalogObservation)
+			raw, err := json.Marshal(merged)
+			if err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE new_api_site_authorizations SET group_catalog=$2::jsonb WHERE id=$1`, b.Profile.ID, string(raw)); err != nil {
+				return err
+			}
+		}
 	}
 	if e = enqueueSchedulerOutbox(ctx, tx, service.SchedulerOutboxEventAccountChanged, &a.ID, nil, nil); e != nil {
 		return e

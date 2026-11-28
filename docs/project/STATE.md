@@ -3,11 +3,9 @@
 ## 恢复检查点
 
 <!-- resume:start -->
-Task: sole workspace H:/Root/jiaoben/01_AI接口与网关/sub2api on feat/automated-upstream-supply b42f2489a.
-Extra source tree removed; original homepage/atlas preserved. Latest approved product plan plus A1 implementation retained.
-Verified feature: Win race53, Linux focused, UI168/browser24. Canonical path: typecheck/50 UI tests/domain pass; no CI/PR/release/deploy.
-28 tasks/20 done/8 partial. A1 done; A2 actual fixed-group proof/model-tier/product consumption pending. See design and DECISIONS.
-9583364B prior scratch is host-policy blocked; retain, no workaround.
+D7.4-A2 | H:/Root/jiaoben/01_AI接口与网关/sub2api | feat/automated-upstream-supply | base08f9a2b7d.
+Verified: four-package race/PG18x2/UI182/Edge32/vet/lint; no CI/PR/release/deploy.
+28 total/20 done/8 partial. Quotes verified; next A2 fixed-group/models/products, Sub2API user auth. Scratch policy-blocked; see waits.
 <!-- resume:end -->
 
 ## 目标与入口
@@ -57,9 +55,9 @@ Verified feature: Win race53, Linux focused, UI168/browser24. Canonical path: ty
 | D5.4.1 | done | 原生OpenAI Key/模型HTTP同路探测及中英UI本地已验；非缓存域/严格资格 |
 | D5 | in_progress | 逐尝试缓存/等待/输出/来源及同路探测已本地验；实际组/其余scope/缓存域/存活与资格仍缺 |
 | D6 | in_progress | 已配置健康保留/故障避让及恢复不抢回已验；D6.2产品接线仍缺，D6.3软迁移待可信前缀/候选域和净收益 |
-| D7 | in_progress | 原线路卡/状态及A1来源边界、A2登记链已本地验；实际组选路/模型档/自动准入仍缺 |
+| D7 | in_progress | 来源登记/报价目录与变化本地已验；实际组选路、模型档及接管待验 |
 | D7.4-A1 | done | 外部组≠本地Group；财务实体不复用路由，登记不授予资格；见设计12.1.10十 |
-| D7.4-A2 | in_progress | 版本化登记/PG/API/清册本地已验；实际组选路证明、模型档清册与产品消费仍待 |
+| D7.4-A2 | in_progress | 报价/变化/关联提示已验；实际组选路、模型档及产品消费待验 |
 | D5.1/D6.1 | done | 上下游/账单合同；同run粘性/跨run隔离、Messages独立前缀，race40/vet |
 | D5.2 | done | 最终原始摘要、唯一逻辑计数/覆盖、本人筛选/30天与中英390px；非生产证据 |
 | D5.3.1–.10 | done | Key/scope/等待/逐尝试缓存与输出已验；非实际组/资格/生产 |
@@ -86,3 +84,4 @@ Verified feature: Win race53, Linux focused, UI168/browser24. Canonical path: ty
 
 - 唯一工作区H:/Root/jiaoben/01_AI接口与网关/sub2api；不再新建clone/worktree/源码副本，原首页/设计草稿保留。
 - 原拒删资源保持，见DECISIONS。新增H:/Root/DevCache/tmp/sub2api-d7.4-source-map清理被宿主拒绝，待宿主解除，不重试。
+- 构建清理：`backend/internal/web/dist` 924992685B/20396文件；宿主拒绝删除，保持原位，不重试或换工具。宿主/用户释放策略或手动清理；旧9583364B拒删项保留。

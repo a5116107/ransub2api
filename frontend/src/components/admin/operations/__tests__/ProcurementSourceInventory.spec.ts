@@ -2,12 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import Inventory from '../ProcurementSourceInventory.vue'
-import { listProcurementSources, createProcurementSource, getProcurementSource, setProcurementSourceEnabled, deleteProcurementSource, type ProcurementSourceMapping, type ProcurementSourcePage } from '@/api/admin/procurementSources'
+import { listProcurementSources, createProcurementSource, getProcurementSource, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, type ProcurementSourceMapping, type ProcurementSourcePage, type UpstreamGroupCatalogView } from '@/api/admin/procurementSources'
 import { list as listGroups } from '@/api/admin/groups'
 import { list as listAccounts } from '@/api/admin/accounts'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
-vi.mock('@/api/admin/procurementSources', () => ({ listProcurementSources: vi.fn(), createProcurementSource: vi.fn(), getProcurementSource: vi.fn(), setProcurementSourceEnabled: vi.fn(), deleteProcurementSource: vi.fn() }))
+vi.mock('vue-i18n', async importOriginal => ({ ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('@/api/admin/procurementSources', () => ({ listProcurementSources: vi.fn(), createProcurementSource: vi.fn(), getProcurementSource: vi.fn(), setProcurementSourceEnabled: vi.fn(), deleteProcurementSource: vi.fn(), getUpstreamGroupCatalog: vi.fn() }))
 vi.mock('@/api/admin/groups', () => ({ list: vi.fn() }))
 vi.mock('@/api/admin/accounts', () => ({ list: vi.fn() }))
 const row = (): ProcurementSourceMapping => ({
@@ -19,6 +19,10 @@ const row = (): ProcurementSourceMapping => ({
   route_identity: 'current', source_identity: 'declared', fixed_group_selection: 'unverified', dispatchable: false
 })
 const page = (): ProcurementSourcePage => ({ version: 1, observed_at: '2026-11-28T00:00:00Z', page: 1, page_size: 20, total: 1, items: [row()] })
+const quotation = (): UpstreamGroupCatalogView => ({ version: 1, account_id: 9, platform: 'openai', user_id: 7, observed_at: '2026-11-28T00:00:00Z', catalog: {
+  version: 1, provider: 'new_api', scope: 'management_user', status: 'ok', attempted_at: '2026-11-28T00:00:00Z', received_at: '2026-11-28T00:00:00Z', fresh_until: '2026-11-28T01:00:00Z',
+  groups: [{ id: 'vip', name: 'My VIP', personal_rate: 0, public_rate: 1 }], changes: []
+}, impact: { sources: [{ id: 1, name: 'Supplier / VIP' }], products: [{ id: 2, name: 'Product A' }], truncated: false } })
 const SelectStub = defineComponent({
   props: ['modelValue', 'options', 'id', 'disabled'], emits: ['update:modelValue', 'open', 'search'],
   template: '<select :id="id" :value="modelValue" :disabled="disabled" @focus="$emit(\'open\')" @change="$emit(\'update:modelValue\', Number($event.target.value))"><option value="0"></option><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>'
@@ -53,6 +57,57 @@ async function draft(w: ReturnType<typeof mount>) {
 }
 
 describe('source registration in the existing operations page', () => {
+  it('reads the saved quotation only when opened, preserving zero and separate public prices', async () => {
+    const w = await view()
+    expect(getUpstreamGroupCatalog).not.toHaveBeenCalled()
+    vi.mocked(getUpstreamGroupCatalog).mockResolvedValue(quotation())
+    const detail = w.get('[data-testid="source-quote-9"]')
+    ;(detail.element as HTMLDetailsElement).open = true
+    await detail.trigger('toggle'); await flushPromises()
+    expect(getUpstreamGroupCatalog).toHaveBeenCalledTimes(1)
+    expect(w.get('[data-testid="source-personal-rate"]').text()).toBe('0')
+    expect(w.get('[data-testid="source-public-rate"]').text()).toBe('1')
+    expect(w.text()).toContain('Product A')
+    expect(w.text()).toContain('upstreamOps.sources.catalog.impactScope')
+    vi.mocked(getUpstreamGroupCatalog).mockRejectedValueOnce(new Error('private upstream body'))
+    await w.get('[data-testid="source-quote-refresh"]').trigger('click'); await flushPromises()
+    expect(w.find('[data-testid="source-personal-rate"]').exists()).toBe(false)
+    expect(w.text()).toContain('upstreamOps.sources.catalog.failed')
+    expect(w.text()).not.toContain('private upstream body')
+  })
+  it.each(['failed', 'expired', 'authorization_changed'] as const)('labels previous quotation values as %s instead of qualified', async status => {
+    const q = quotation(); q.catalog.status = status
+    vi.mocked(getUpstreamGroupCatalog).mockResolvedValue(q)
+    const w = await view(), detail = w.get('[data-testid="source-quote-9"]')
+    ;(detail.element as HTMLDetailsElement).open = true
+    await detail.trigger('toggle'); await flushPromises()
+    expect(w.get('[data-testid="source-quote-status"]').text()).toBe('upstreamOps.sources.catalog.states.' + status)
+    expect(w.get('[data-testid="source-personal-rate"]').text()).toBe('0')
+    expect(w.get('[data-testid="source-conclusion"]').text()).toBe('upstreamOps.sources.states.pending_verification')
+  })
+  it('discards a late quotation response after refreshing the inventory', async () => {
+    let finish!: (value: UpstreamGroupCatalogView) => void
+    vi.mocked(getUpstreamGroupCatalog).mockReturnValueOnce(new Promise(resolve => { finish = resolve })).mockReturnValue(new Promise(() => undefined))
+    const w = await view(), detail = w.get('[data-testid="source-quote-9"]')
+    ;(detail.element as HTMLDetailsElement).open = true
+    await detail.trigger('toggle')
+    await w.get('[data-testid="source-refresh"]').trigger('click'); await flushPromises()
+    expect(vi.mocked(getUpstreamGroupCatalog).mock.calls[0]?.[1]?.aborted).toBe(true)
+    finish(quotation()); await flushPromises()
+    expect(w.find('[data-testid="source-personal-rate"]').exists()).toBe(false)
+  })
+  it('filters and pages a large directory without losing explicit unknown values', async () => {
+    const q = quotation()
+    q.catalog.groups = Array.from({ length: 23 }, (_, i) => ({ id: `g-${i}`, name: `Group ${i}`, personal_rate: i === 22 ? null : i, public_rate: null }))
+    vi.mocked(getUpstreamGroupCatalog).mockResolvedValue(q)
+    const w = await view(), detail = w.get('[data-testid="source-quote-9"]')
+    ;(detail.element as HTMLDetailsElement).open = true
+    await detail.trigger('toggle'); await flushPromises()
+    expect(w.findAll('[data-testid="source-personal-rate"]')).toHaveLength(20)
+    await detail.get('input').setValue('g-22')
+    expect(w.findAll('[data-testid="source-personal-rate"]')).toHaveLength(1)
+    expect(w.get('[data-testid="source-personal-rate"]').text()).toBe('—')
+  })
   it('does not read hidden inventory or issue a probe on mount', () => {
     const w = mount(Inventory); wrappers.push(w)
     expect(listProcurementSources).not.toHaveBeenCalled()

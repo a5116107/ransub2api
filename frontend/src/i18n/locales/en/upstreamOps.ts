@@ -1,5 +1,39 @@
 export default {
   sources: {
+    catalog: {
+      "title": "Quotations and changes",
+      "read": "Read collected results",
+      "states": {
+        "ok": "Personal group prices observed · Not qualified",
+        "failed": "Incomplete read · Last complete results below",
+        "expired": "Quotation expired · Awaiting collection",
+        "not_observed": "No quotation observed yet",
+        "authorization_changed": "Authorization changed · Recheck pending"
+      },
+      "management_user": "Available fixed groups for this purchasing user. Vendor scope is undeclared, not inferred from names. This does not prove a call key can select a group.",
+      "call_key": "Only this call key’s quotation, not every group available to the user. Dynamic peak factors are excluded; model prices and cash procurement costs remain separate.",
+      "personal": "Personal quotation multiplier",
+      "public": "Public reference (not your price)",
+      "lastRead": "Last complete collection:",
+      "expires": "Valid until:",
+      "find": "Find a purchase group",
+      "empty": "No complete quotation to show. Missing values are not zero.",
+      "pagination": "Quotation catalog pages",
+      "changes": "Recent changes",
+      "historyLimit": "Latest 30 days, at most 100 changes. The first complete read sets a baseline; failed collection is not a price change or group removal.",
+      "noChanges": "No confirmed changes since the baseline.",
+      "kinds": {
+        "group_added": "Group added",
+        "group_removed": "Group removed",
+        "group_updated": "Quotation or name changed"
+      },
+      "impact": "Configuration related to this account",
+      "impactScope": "Explicit source declarations and configured product relationships only. These are not confirmed affected or qualified products. No members, selling prices or routes are changed.",
+      "sources": "Source declarations",
+      "products": "Related groups / sales products",
+      "truncated": "At most 100 related items per category are shown.",
+      "failed": "Read failed. Previous displayed conclusions were removed; read again to retry."
+    },
     title: 'Supply inventory', subtitle: 'Declared sources · Routing unchanged',
     scope: 'Register supplier → provider → purchase group → local account. Registration is not a passed check and changes no memberships, prices, concurrency or routing. Fixed-group selection, model quality and cost each need their own evidence.',
     search: 'Find supplier, purchase group or account', platform: 'Provider', all: 'All providers', read: 'Read again', register: 'Register source', loading: 'Reading source inventory…',

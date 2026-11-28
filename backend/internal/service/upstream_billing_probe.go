@@ -127,6 +127,11 @@ type UpstreamBillingProbeSnapshot struct {
 	// Balance is the upstream balance queried by the same probe. The top-level
 	// status, failure count and schedule describe the rate request only.
 	Balance *UpstreamBalanceSnapshot `json:"balance,omitempty"`
+	// Only the current call-key quotation is stored on the account. Shared
+	// management-user catalogs live once on the encrypted authorization row.
+	GroupCatalog *UpstreamGroupCatalog `json:"group_catalog,omitempty"`
+	// Request-local input for the authorization repository's atomic write.
+	CatalogObservation *UpstreamGroupCatalog `json:"-"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.
@@ -1096,6 +1101,11 @@ func (s *UpstreamBillingProbeService) updateSnapshot(
 	if !ok {
 		return ErrUpstreamBillingProbeUnavailable
 	}
+	var previous *UpstreamGroupCatalog
+	if old := decodeUpstreamBillingProbeSnapshot(account.Extra); old != nil {
+		previous = old.GroupCatalog
+	}
+	snapshot.GroupCatalog = MergeUpstreamGroupCatalog(previous, upstreamKeyQuoteObservation(account, snapshot))
 	return writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, rateMultiplier)
 }
 

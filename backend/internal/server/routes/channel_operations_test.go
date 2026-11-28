@@ -69,13 +69,15 @@ func TestUpstreamCacheProbeRoutesRequireAdministrator(t *testing.T) {
 			group.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(nil, nil, nil, nil)))
 		}
 		registerAccountRoutes(group, &handler.Handlers{Admin: &handler.AdminHandlers{Account: &admin.AccountHandler{}}}, nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/admin/accounts/7/cache-probe", nil))
 		status := 401
 		if scoped {
 			status = 403
 		}
-		require.Equal(t, status, w.Code)
+		for _, route := range []struct{ method, path string }{{"POST", "/api/v1/admin/accounts/7/cache-probe"}, {"GET", "/api/v1/admin/accounts/7/upstream-billing-probe/catalog"}} {
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
+			require.Equal(t, status, w.Code)
+		}
 	}
 }
 
@@ -105,16 +107,18 @@ func TestUpstreamCacheProbeRegisteredRoleBoundary(t *testing.T) {
 			group := router.Group("/api/v1/admin")
 			group.Use(gin.HandlerFunc(middleware.NewAdminAuthMiddleware(auth, users, nil, nil)))
 			registerAccountRoutes(group, &handler.Handlers{Admin: &handler.AdminHandlers{Account: &admin.AccountHandler{}}}, nil)
-			request := httptest.NewRequest("POST", "/api/v1/admin/accounts/7/cache-probe", strings.NewReader(`{"model":"public-model","intervals_ms":[0],"prefix_blocks":16,"timeout_seconds":10}`))
-			request.Header.Set("Authorization", "Bearer "+token)
-			request.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, request)
 			status := 403
 			if role == service.RoleAdmin {
 				status = 503 // Authenticated admin reaches the deliberately missing service.
 			}
-			require.Equal(t, status, w.Code)
+			for _, route := range []struct{ method, path string }{{"POST", "/api/v1/admin/accounts/7/cache-probe"}, {"GET", "/api/v1/admin/accounts/7/upstream-billing-probe/catalog"}} {
+				request := httptest.NewRequest(route.method, route.path, strings.NewReader(`{"model":"public-model","intervals_ms":[0],"prefix_blocks":16,"timeout_seconds":10}`))
+				request.Header.Set("Authorization", "Bearer "+token)
+				request.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, request)
+				require.Equal(t, status, w.Code)
+			}
 		})
 	}
 }

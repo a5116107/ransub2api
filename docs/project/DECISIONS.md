@@ -4836,3 +4836,15 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 在原 Git 对象库中校验保全14个既有未提交文件（1827436逻辑字节），未建备份源码目录或使用stash/reset。切回研发线后，首页与图册10个文件的SHA256逐项不变；来源登记22个已验证实现/测试输入与 `b42f2489a` 一致。切分支时的文档冲突已解决，当前设计采用最新产品方案并保留源码验收边界；过时章节引用已改正，日期证据不作当前进度。用户既有首页/设计改动继续留在工作区，不夹带进本轮提交。
 - 标准目录实际执行：vue-tsc exit0；来源清册、API、Select、原HomeView compact及i18n五套Vitest **50 passed / 5 files**；Go domain聚焦测试 `go test -tags unit ./internal/domain -run ProcurementSourceMapping -count=1` exit0/0.477s。来源实现未改，原Windows race53、Linux聚焦和浏览器24匹配证据复用，不重复启动完整构建/数据库/浏览器。无合并标记/未合并索引，文档本地文件链接0缺失，STATE仍≤100行/8192字节。
 - 验证沿原工具和共享缓存；本轮不新增构建目录、守护进程、临时适配器或清理台账。既有 `H:/Root/DevCache/tmp/sub2api-d7.4-source-map` 的9583364B构建仍是宿主策略拒删项，不重试或换工具绕行，不混入源码；最小迁移保全索引沿既有source-mapping证据目录的consolidation.json。
+
+## 2026-11-28：D7.4-A2 报价目录观测与变更解释
+
+- 接续 upstream-ratio-watch 评估及“帮我补齐”授权，在唯一工作区原位扩展探测器、加密授权和来源清册；未克隆/复制参考仓库、未新增服务或轮询器。原28项仍20done/8partial，本切片不关闭A2或扩大自动准入。
+- New API完整目录复用原管理用户授权及出站/代理/预算，在原授权记录的358增量JSON列存一次；按外部组键区分，不按名称合并。Sub2API沿当前调用Key的有效报价回执保存有界变化；完整用户目录授权适配继续待做，不借调用Key读取用户目录。
+- 本人/公开价、调用Key实际选组及模型/成本资格分开。失败不退回公开价、不续期、不发删组/伪涨价；明确0保留。首次完整采集建基线，后续最多100条/30天，读取也隐藏过期事件而不改存储。轮换标待核对、晚到不覆盖；未来/损坏目录不降级覆盖，也不阻断既有独立倍率刷新。
+- 初次解析器替换触发原回归：无关组null导致当前有效固定组也丢价（TestNewAPIPreviewAndProbeUseSameFixedGroupRule期望true/实false）。已让同一解析器分别输出合法单组报价与整目录完整性，保留原钱包/绑定/适用范围。前端晚到夹具最初把同一Promise复用于后续新读取，改为独立请求并断言旧请求已abort，不将夹具错误描述成产品根因。
+- 真实HTTP→原探测器→PG18→重建仓库/runner独立读回通过，GET不增加上游请求。覆盖同名、0、503/恢复删组、用户隔离、共享授权并发/晚到、轮换、脱敏、原倍率/成员不变、未来版本及事务式加列回退。两项集成双轮race通过（19.795s）；更广NewAPI集成双轮56条test pass/0fail/skip，计数含子例和重复轮次，非56个独立场景。
+- 四包聚焦race通过：`go test -p 1 -parallel 2 -race ./internal/service ./internal/repository ./internal/handler/admin ./internal/server/routes -run 'Test(NewAPI|UpstreamGroupCatalog|UpstreamBilling|AccountHandlerProbeUpstreamBilling|UpstreamCacheProbe)' -count=1`。最终读取期限/留存修改另跑服务聚焦race通过；四包vet及含integration的增量fast lint均exit0/0 issues。
+- 前端四套Vitest182pass、类型/四文件ESLint exit0；最终Vite构建31.41s。原浏览器夹具改回标准构建目录，中英390/1440px共32检查通过，异常/未预期API/外站请求0；含键盘懒读、本人/公开价/0、搜索分页、旧→新变化、失败/上次结果及恢复。浏览器使用隔离API夹具；持久化由真实HTTP/PG另验，不代表生产加载。
+- 仅交付自有研发分支，不CI/PR/发行/部署；原首页、图册和其他设计草稿保留且不夹带。字段级旧查询/事务回退不冒充旧二进制全混版验收；实际固定组选路、模型档/缓存域、资格消费及生产观察仍开放。
+- 构建清理新增受限项：标准`backend/internal/web/dist`累计20396个可重建文件/924992685B；确认无跟踪文件、无reparse和任务浏览器已退出后，首次原生PowerShell删除在进程启动前被宿主策略拒绝，0字节删除。不重试、不换工具或移动绕行，原位保留并写入STATE，由宿主/用户释放策略或手动处理。保留共享Go/pnpm缓存及最小证据；此项不描述为已清理。

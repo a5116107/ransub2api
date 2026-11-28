@@ -508,6 +508,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.GET("/:id/grok-media-eligibility", h.Admin.Account.GetGrokMediaEligibility)
 		accounts.PUT("/:id/grok-media-eligibility", h.Admin.Account.UpdateGrokMediaEligibility)
 		accounts.GET("/:id/upstream-billing-probe/config", h.Admin.Account.GetNewAPIConfig)
+		accounts.GET("/:id/upstream-billing-probe/catalog", h.Admin.Account.GetUpstreamGroupCatalog)
 		accounts.POST("/:id/upstream-billing-probe/config/preview", h.Admin.Account.PreviewNewAPIConfig)
 		accounts.PUT("/:id/upstream-billing-probe/config", h.Admin.Account.SaveNewAPIConfig)
 		accounts.DELETE("/:id/upstream-billing-probe/config", h.Admin.Account.DeleteNewAPIConfig)

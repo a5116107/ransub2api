@@ -32,6 +32,19 @@ func (h *AccountHandler) GetNewAPIConfig(c *gin.Context) {
 	}
 	response.Success(c, out)
 }
+
+func (h *AccountHandler) GetUpstreamGroupCatalog(c *gin.Context) {
+	id, ok := h.newAPIConfigID(c)
+	if !ok {
+		return
+	}
+	out, err := h.upstreamBillingProbe.GetUpstreamGroupCatalog(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, out)
+}
 func (h *AccountHandler) newAPIConfigWrite(c *gin.Context, save bool) {
 	id, ok := h.newAPIConfigID(c)
 	if !ok {
