@@ -4848,3 +4848,14 @@ GitHub连接辅助仅对GET的瞬时断连做最多三次有限重试；POST等�
 - 前端四套Vitest182pass、类型/四文件ESLint exit0；最终Vite构建31.41s。原浏览器夹具改回标准构建目录，中英390/1440px共32检查通过，异常/未预期API/外站请求0；含键盘懒读、本人/公开价/0、搜索分页、旧→新变化、失败/上次结果及恢复。浏览器使用隔离API夹具；持久化由真实HTTP/PG另验，不代表生产加载。
 - 仅交付自有研发分支，不CI/PR/发行/部署；原首页、图册和其他设计草稿保留且不夹带。字段级旧查询/事务回退不冒充旧二进制全混版验收；实际固定组选路、模型档/缓存域、资格消费及生产观察仍开放。
 - 构建清理新增受限项：标准`backend/internal/web/dist`累计20396个可重建文件/924992685B；确认无跟踪文件、无reparse和任务浏览器已退出后，首次原生PowerShell删除在进程启动前被宿主策略拒绝，0字节删除。不重试、不换工具或移动绕行，原位保留并写入STATE，由宿主/用户释放策略或手动处理。保留共享Go/pnpm缓存及最小证据；此项不描述为已清理。
+
+## 2026-11-28：D7.4-A2 来源固定组与模型/档位证据读模型
+
+- 承接“继续推进任务”，在同一工作区原来源清册读路径补齐登记→账号→供应商固定组声明/报价请求选组回执→模型/档位报价声明的只读核对。没有新表/迁移、采集请求、凭据库、评分器或调度开关。原28项保持20done/8partial；不把读模型完成当成自动产品或真实业务选组已验。
+- 同一repeatable-read事务读取登记、Account线路、New API站点/用户/Token绑定和原倍率快照，返回`assessed_at`；不按组名、可见目录、本地Group同数值或默认Key报价确认外部组。New API匹配当前线路/站点/绑定Token/组及本人有效报价；Sub2API匹配生效Header和原回执的精确字符串组ID，覆盖超过float64精度的外部ID。旧float64 Token ID超安全整数范围保持未确认。
+- 原`rate_applicability`解析器/verdict重算模型、协议、服务档、effort、上下文及输出选项；保留适用/排除/未知/冲突，过期/失败/错组/暂停/离组/授权撤销不借旧范围。供应商原结论、额外字段及手工声明不充当此证据，读取不续期、不改账号/成员/售价/调度。`source_identity=declared`、`fixed_group_selection=unverified`、`dispatchable=false`保持，真实业务组选路和模型验真另计。
+- 初次100站点夹具将所有200来源都期望为receipt_confirmed，双轮各1例失败（实际unverified）。源码确认当前Gemini的`IsHeaderOverrideEligible`不发送这种Header；不是读模型丢组。保留该转发边界，将夹具分为OpenAI正例/Gemini负例并补纯服务回归，未放宽Header支持或准入来迁就用例。
+- 最终真实PG18/Redis8双轮race：`go test -p 1 -parallel 2 -race -tags=integration ./internal/repository -run '^Test(ProcurementSourceMapping|UpstreamGroupCatalogIntegration)' -count=2 -timeout=8m -json`，42条test pass/0fail/skip（含子例和重复轮次，非42个独立场景）。真实HTTP供应商→探测器→PG→登记读回及原管理HTTP检查匹配/失败/恢复/授权轮换；JSON/ctid/xmin与原倍率/成员不变、权限和敏感字段检查通过。100站点/200显式来源，两页各100项加厂商/搜索只读检查274ms/415ms；仅本地夹具，不推广生产延迟。
+- Windows四包race：`go test -race -p 1 -parallel 2 ./internal/service ./internal/repository ./internal/handler/admin ./internal/server/routes -run 'Test(ProcurementSource|NewAPI|UpstreamGroupCatalog|ChannelOperationsRoutes)' -count=1`全部通过；补充Gemini单元例后服务聚焦race再过（1.247s）。同四包integration-tag vet exit0，增量fast lint 0 issues。Linux只读挂载唯一源码、复用共享Go缓存和自动go1.27.4，四包同范围聚焦全部pass；不把此项称为Linux数据库/race或完整混版验收。Linux工具链冷启动在Windows绑定目录产生大量元数据I/O，完成后task容器自动移除，无第二源码副本。
+- 原前端入口展示采购组核对、分项适用/排除、模型/协议/档位搜索和分页；版本、来源、外部组、期限和不可用旧条目响应边界有回归。四套Vitest198pass，类型/四文件ESLint exit0。原Edge夹具切到标准Vite源，中英390/1440px共40检查通过，页面异常/未预期API/外站请求0，含键盘、错组/过期/失败撤旧范围和恢复；接口为隔离夹具，持久化由真实HTTP/PG另验。没有往受限dist再构建或重试删除；任务Vite监听已停止。
+- 设计12.1.13与STATE同步；仅提交本任务文件/文档段落，首页、图册及旧设计草稿保留。单功能PR约束保持，不CI/PR/发行/部署。A2真实逐请求固定组选路、B模型分项成本、C/D产品资格/候选消费及生产加载仍开放；供应商/接入方补业务组选路回执和模型/Fast分项报价适用契约后继续，不把组价声明或前端卡片当作完整资格。

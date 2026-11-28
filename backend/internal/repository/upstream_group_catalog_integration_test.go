@@ -40,6 +40,10 @@ func TestUpstreamGroupCatalogIntegrationCollectReadFailureRecoveryAndIsolation(t
 			body = `{"success":true,"data":{"id":7,"quota":1000000}}`
 		case "/api/pricing":
 			body = `{"success":true,"group_ratio":{"vip":0.8,"other":0.9,"public-only":1}}`
+			if phase.Load() >= 3 {
+				at := time.Now().UTC().Add(-time.Minute)
+				body = fmt.Sprintf(`{"success":true,"pricing_version":"catalog-v1","group_ratio":{"vip":0,"other":0.9},"rate_applicability":{"vip":{"schema_version":1,"source_version":"catalog-v1","group_rate_multiplier":0,"observed_at":%q,"expires_at":%q,"entries":[{"model":"gpt-fixture","protocol":"responses_http","service_tier":"unspecified","reasoning_effort":"high","context":"all","group_rate_applies":true},{"model":"gpt-fixture","protocol":"responses_http","service_tier":"priority","reasoning_effort":"high","context":"all","group_rate_applies":false}]}}}`, at.Format(time.RFC3339Nano), at.Add(time.Hour).Format(time.RFC3339Nano))
+			}
 		case "/api/user/self/groups":
 			body = `{"success":true,"data":{"vip":{"ratio":0.1,"desc":"Same name"},"other":{"ratio":0.2,"desc":"Same name"}}}`
 			if phase.Load() == 1 {
@@ -108,6 +112,10 @@ func TestUpstreamGroupCatalogIntegrationCollectReadFailureRecoveryAndIsolation(t
 	require.Equal(t, "ok", first.Catalog.Status)
 	require.Len(t, first.Catalog.Groups, 2, "same names do not collapse stable group IDs")
 	require.Empty(t, first.Catalog.Changes)
+	firstSource, err := mappings.GetProcurementSourceMapping(ctx, mapping.ID)
+	require.NoError(t, err)
+	require.Equal(t, "supplier_declared", firstSource.Evidence.Selection.Status)
+	require.Equal(t, "not_declared", firstSource.Evidence.Models.Status, "a pricing catalog alone must not invent model/tier coverage")
 	require.Contains(t, first.Impact.Sources, service.UpstreamCatalogRelated{ID: mapping.ID, Name: "Supplier / vip"})
 	require.Contains(t, first.Impact.Products, service.UpstreamCatalogRelated{ID: product, Name: "catalog-product-group"})
 	phase.Store(1)
@@ -122,11 +130,31 @@ func TestUpstreamGroupCatalogIntegrationCollectReadFailureRecoveryAndIsolation(t
 	require.Equal(t, changed.Catalog.FreshUntil, failed.Catalog.FreshUntil)
 	require.Len(t, failed.Catalog.Changes, 1)
 	require.Len(t, failed.Catalog.Groups, 2)
+	failedSource, err := mappings.GetProcurementSourceMapping(ctx, mapping.ID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", failedSource.Evidence.Selection.Status)
+	require.Empty(t, failedSource.Evidence.Models.Entries)
 	phase.Store(3)
 	recovered := probe()
 	require.Equal(t, "ok", recovered.Catalog.Status)
 	require.Equal(t, "group_removed", recovered.Catalog.Changes[0].Kind)
 	require.Equal(t, "other", recovered.Catalog.Changes[0].GroupID)
+	validSource, err := mappings.GetProcurementSourceMapping(ctx, mapping.ID)
+	require.NoError(t, err)
+	require.Equal(t, "supplier_declared", validSource.Evidence.Selection.Status)
+	require.Equal(t, "declared", validSource.Evidence.Models.Status)
+	require.Len(t, validSource.Evidence.Models.Entries, 2)
+	require.Equal(t, "covered", validSource.Evidence.Models.Entries[0].Conclusion)
+	require.Equal(t, "excluded", validSource.Evidence.Models.Entries[1].Conclusion)
+	require.False(t, validSource.Dispatchable)
+	_, err = db.ExecContext(ctx, `UPDATE procurement_supplier_groups SET external_group_id='wrong-supplier-group' WHERE id=$1`, mapping.SourceGroupID)
+	require.NoError(t, err)
+	mismatch, err := mappings.GetProcurementSourceMapping(ctx, mapping.ID)
+	require.NoError(t, err)
+	require.Equal(t, "mismatch", mismatch.Evidence.Selection.Status)
+	require.Empty(t, mismatch.Evidence.Models.Entries)
+	_, err = db.ExecContext(ctx, `UPDATE procurement_supplier_groups SET external_group_id='vip' WHERE id=$1`, mapping.SourceGroupID)
+	require.NoError(t, err)
 	var raw, accountExtra string
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT group_catalog::text FROM new_api_site_authorizations WHERE site_url=$1`, server.URL).Scan(&raw))
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT extra::text FROM accounts WHERE id=$1`, id).Scan(&accountExtra))
@@ -157,6 +185,10 @@ func TestUpstreamGroupCatalogIntegrationCollectReadFailureRecoveryAndIsolation(t
 	rotated, err := runner.GetUpstreamGroupCatalog(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, "authorization_changed", rotated.Catalog.Status)
+	rotatedSource, err := mappings.GetProcurementSourceMapping(ctx, mapping.ID)
+	require.NoError(t, err)
+	require.Equal(t, "not_observed", rotatedSource.Evidence.Selection.Status)
+	require.Empty(t, rotatedSource.Evidence.Models.Entries)
 	require.ErrorIs(t, auth.WriteSnapshot(ctx, oldAccount, oldBinding, &service.UpstreamBillingProbeSnapshot{CatalogObservation: recovered.Catalog}), service.ErrUpstreamBillingProbeIdentityChanged)
 	// Old application reads do not depend on the additive field. The local
 	// migration rollback rehearsal is transactional and preserves observations.

@@ -23,6 +23,18 @@ const quotation = (): UpstreamGroupCatalogView => ({ version: 1, account_id: 9, 
   version: 1, provider: 'new_api', scope: 'management_user', status: 'ok', attempted_at: '2026-11-28T00:00:00Z', received_at: '2026-11-28T00:00:00Z', fresh_until: '2026-11-28T01:00:00Z',
   groups: [{ id: 'vip', name: 'My VIP', personal_rate: 0, public_rate: 1 }], changes: []
 }, impact: { sources: [{ id: 1, name: 'Supplier / VIP' }], products: [{ id: 2, name: 'Product A' }], truncated: false } })
+function evidencePage(): ProcurementSourcePage {
+  const next = page()
+  next.items[0]!.external_group_id = 'vip'
+  next.items[0]!.evidence = { version: 1, assessed_at: '2026-11-28T00:01:00Z',
+    selection: { status: 'supplier_declared', source: 'new_api.management', group_id: 'vip', observed_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T01:00:00Z' },
+    models: { status: 'declared', source: 'new_api.pricing', source_version: 'fixture-1', observed_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T00:10:00Z', entries: [
+      { model: 'gpt-fixture', protocol: 'responses_http', service_tier: 'unspecified', reasoning_effort: 'high', context: 'all', group_rate_applies: true, conclusion: 'covered' },
+      { model: 'gpt-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', context: 'all', group_rate_applies: false, conclusion: 'excluded' }
+    ] }
+  }
+  return next
+}
 const SelectStub = defineComponent({
   props: ['modelValue', 'options', 'id', 'disabled'], emits: ['update:modelValue', 'open', 'search'],
   template: '<select :id="id" :value="modelValue" :disabled="disabled" @focus="$emit(\'open\')" @change="$emit(\'update:modelValue\', Number($event.target.value))"><option value="0"></option><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>'
@@ -57,6 +69,40 @@ async function draft(w: ReturnType<typeof mount>) {
 }
 
 describe('source registration in the existing operations page', () => {
+  it('distinguishes matching supplier declarations from business proof and shows per-tier exclusions', async () => {
+    vi.mocked(listProcurementSources).mockResolvedValue(evidencePage())
+    const w = await view()
+    expect(w.get('[data-testid="source-selection"]').text()).toContain('upstreamOps.sources.evidence.selections.supplier_declared')
+    expect(w.get('[data-testid="source-conclusion"]').text()).toBe('upstreamOps.sources.states.pending_verification')
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(2)
+    expect(w.findAll('[data-testid="source-model-verdict"]').map(row => row.text())).toEqual(['upstreamOps.sources.evidence.verdicts.covered', 'upstreamOps.sources.evidence.verdicts.excluded'])
+    const detail = w.get('[data-testid="source-model-evidence"]')
+    await detail.get('input').setValue('priority')
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(1)
+    expect(w.get('[data-testid="source-model-verdict"]').text()).toContain('excluded')
+    expect(getUpstreamGroupCatalog).not.toHaveBeenCalled()
+  })
+  it.each(['mismatch', 'expired', 'failed', 'unavailable'] as const)('does not show previous model conclusions when the source evidence is %s', async status => {
+    const next = evidencePage(), e = next.items[0]!.evidence!
+    e.selection.status = status
+    e.models = { status: 'unavailable', source: '', source_version: '', observed_at: null, expires_at: null, entries: [] }
+    vi.mocked(listProcurementSources).mockResolvedValue(next)
+    const w = await view()
+    expect(w.get('[data-testid="source-selection"]').text()).toContain(status)
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(0)
+    expect(w.text()).toContain('upstreamOps.sources.evidence.noCurrentScopes')
+  })
+  it('paginates model scopes and resets the filter on a fresh inventory read', async () => {
+    const next = evidencePage(), entries = next.items[0]!.evidence!.models.entries
+    next.items[0]!.evidence!.models.entries = Array.from({ length: 23 }, (_, i) => ({ ...entries[0]!, model: `model-${i}` }))
+    vi.mocked(listProcurementSources).mockResolvedValue(next)
+    const w = await view(), detail = w.get('[data-testid="source-model-evidence"]')
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(10)
+    await detail.get('input').setValue('model-22')
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(1)
+    await w.get('[data-testid="source-refresh"]').trigger('click'); await flushPromises()
+    expect(w.findAll('[data-testid="source-model-scope"]')).toHaveLength(10)
+  })
   it('reads the saved quotation only when opened, preserving zero and separate public prices', async () => {
     const w = await view()
     expect(getUpstreamGroupCatalog).not.toHaveBeenCalled()

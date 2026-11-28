@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -13,37 +15,64 @@ import (
 const sourceMappingColumns = `COALESCE(m.id,0),s.id,s.code,s.name,s.revision,g.id,g.platform,g.external_group_id,g.external_group_name,
  g.local_group_id,lg.platform,lg.name,lg.status,lg.deleted_at IS NOT NULL,g.enabled,g.revision,
  COALESCE(a.id,0),COALESCE(a.name,''),COALESCE(a.status,''),COALESCE(a.deleted_at IS NOT NULL,false),COALESCE(a.platform,''),
- ag.account_id IS NOT NULL,COALESCE(m.enabled,false),COALESCE(m.revision,0),COALESCE(m.updated_at,g.updated_at),m.route_fingerprint`
+ ag.account_id IS NOT NULL,COALESCE(m.enabled,false),COALESCE(m.revision,0),COALESCE(m.updated_at,g.updated_at),m.route_fingerprint,
+ COALESCE(a.type,''),COALESCE(a.credentials,'{}'::jsonb),a.proxy_id,COALESCE(a.extra->'upstream_billing_probe','null'::jsonb),
+ COALESCE(nb.authorization_id,0),COALESCE(np.site_url,''),COALESCE(np.upstream_user_id,0),COALESCE(np.revision,0),
+ COALESCE(nb.upstream_token_id,0),COALESCE(nb.account_fingerprint,''),COALESCE(nb.token_group,'')`
 
 const sourceMappingFrom = ` FROM procurement_supplier_groups g
  JOIN procurement_supplier_sites s ON s.id=g.site_id
  JOIN groups lg ON lg.id=g.local_group_id
  LEFT JOIN procurement_supplier_group_accounts m ON m.source_group_id=g.id
  LEFT JOIN accounts a ON a.id=m.account_id
- LEFT JOIN account_groups ag ON ag.account_id=a.id AND ag.group_id=g.local_group_id`
+ LEFT JOIN account_groups ag ON ag.account_id=a.id AND ag.group_id=g.local_group_id
+ LEFT JOIN new_api_account_bindings nb ON nb.account_id=a.id
+ LEFT JOIN new_api_site_authorizations np ON np.id=nb.authorization_id`
 
 const sourceMappingFilter = `($1='' OR s.code ILIKE '%'||$1||'%' OR s.name ILIKE '%'||$1||'%' OR g.external_group_id ILIKE '%'||$1||'%' OR g.external_group_name ILIKE '%'||$1||'%' OR a.name ILIKE '%'||$1||'%' OR lg.name ILIKE '%'||$1||'%') AND ($2='' OR g.platform=$2)`
 
 type sourceMappingRow struct {
-	item  service.ProcurementSourceMapping
-	route []byte
+	item    service.ProcurementSourceMapping
+	route   []byte
+	account *service.Account
+	binding *service.NewAPIAccountBinding
 }
 
 func scanProcurementSourceMapping(row interface{ Scan(...any) error }) (sourceMappingRow, error) {
 	var out sourceMappingRow
 	item := &out.item
+	account, binding := &service.Account{}, &service.NewAPIAccountBinding{}
+	var credentials, snapshot []byte
 	err := row.Scan(&item.ID, &item.SourceSiteID, &item.SiteCode, &item.SiteName, &item.SiteRevision,
 		&item.SourceGroupID, &item.Platform, &item.ExternalGroupID, &item.ExternalGroupName,
 		&item.LocalGroupID, &item.LocalGroupPlatform, &item.LocalGroupName, &item.LocalGroupStatus, &item.LocalGroupDeleted,
 		&item.SourceGroupEnabled, &item.SourceGroupRevision, &item.AccountID, &item.AccountName, &item.AccountStatus, &item.AccountDeleted, &item.AccountPlatform,
-		&item.InLocalGroup, &item.Enabled, &item.Revision, &item.UpdatedAt, &out.route)
+		&item.InLocalGroup, &item.Enabled, &item.Revision, &item.UpdatedAt, &out.route,
+		&account.Type, &credentials, &account.ProxyID, &snapshot,
+		&binding.Profile.ID, &binding.Profile.SiteURL, &binding.Profile.UserID, &binding.Profile.Revision,
+		&binding.TokenID, &binding.Fingerprint, &binding.Group)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = service.ErrProcurementSourceMappingNotFound
+	}
+	if err != nil {
+		return out, err
+	}
+	if item.AccountID > 0 {
+		account.ID, account.Platform = item.AccountID, item.AccountPlatform
+		if err := json.Unmarshal(credentials, &account.Credentials); err != nil {
+			return out, err
+		}
+		account.Extra = map[string]any{service.UpstreamBillingProbeExtraKey: json.RawMessage(snapshot)}
+		out.account = account
+	}
+	if binding.Profile.ID > 0 {
+		binding.AccountID = item.AccountID
+		out.binding = binding
 	}
 	return out, err
 }
 
-func assessProcurementSourceMapping(ctx context.Context, tx *sql.Tx, row *sourceMappingRow) error {
+func assessProcurementSourceMapping(ctx context.Context, tx *sql.Tx, row *sourceMappingRow, at time.Time) error {
 	item := &row.item
 	item.RouteIdentity = "unknown"
 	if item.AccountID > 0 && !item.AccountDeleted {
@@ -59,6 +88,7 @@ func assessProcurementSourceMapping(ctx context.Context, tx *sql.Tx, row *source
 		}
 	}
 	classifyProcurementSourceMapping(item)
+	item.Evidence = service.BuildProcurementSourceEvidence(item, row.account, row.binding, at)
 	return nil
 }
 
@@ -98,14 +128,14 @@ func (r *channelRepository) ListProcurementSourceMappings(ctx context.Context, s
 		return nil, errors.Join(err, closeErr)
 	}
 	// Finish the row stream before using the same connection for route checks.
+	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&out.ObservedAt); err != nil {
+		return nil, err
+	}
 	for i := range loaded {
-		if err := assessProcurementSourceMapping(ctx, tx, &loaded[i]); err != nil {
+		if err := assessProcurementSourceMapping(ctx, tx, &loaded[i], out.ObservedAt); err != nil {
 			return nil, err
 		}
 		out.Items = append(out.Items, loaded[i].item)
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&out.ObservedAt); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -120,7 +150,11 @@ func readProcurementSourceMappingInTx(ctx context.Context, tx *sql.Tx, id int64)
 	if err != nil {
 		return nil, err
 	}
-	if err := assessProcurementSourceMapping(ctx, tx, &row); err != nil {
+	var at time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+		return nil, err
+	}
+	if err := assessProcurementSourceMapping(ctx, tx, &row, at); err != nil {
 		return nil, err
 	}
 	return &row.item, nil

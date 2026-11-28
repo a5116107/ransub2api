@@ -1,5 +1,45 @@
 export default {
   sources: {
+    evidence: {
+      "selectionTitle": "采购组核对",
+      "modelsTitle": "模型报价范围",
+      "scope": "这里只核对供应商声明及报价请求回执，不代表业务请求已命中，也不证明模型真实或利润已核。只有与登记组对应且仍有效的证据才展示模型范围；手工声明仍在原账号页管理。",
+      "selectionAt": "组证据采集：",
+      "declarationAt": "模型声明时间：",
+      "findModel": "查找模型、协议或服务档",
+      "protocol": "协议",
+      "tier": "服务档",
+      "effort": "思考档",
+      "context": "上下文范围",
+      "noMatch": "没有匹配的模型报价范围。",
+      "noCurrentScopes": "当前没有可关联的有效模型报价范围；不会借用其他组或旧结论。",
+      "pagination": "模型报价范围分页",
+      "selections": {
+        "unavailable": "当前不可核对",
+        "not_observed": "尚无采集结果",
+        "failed": "本次采集未成功",
+        "invalid": "证据格式或时间异常",
+        "expired": "证据已过期",
+        "unverified": "固定组尚未确认",
+        "mismatch": "与登记组或绑定不符",
+        "supplier_declared": "供应商固定组声明已对应",
+        "receipt_confirmed": "报价请求选组已对应"
+      },
+      "modelStates": {
+        "unavailable": "暂不展示旧范围",
+        "not_declared": "上游尚未声明",
+        "invalid": "声明无效",
+        "expired": "声明已过期",
+        "declared": "已读到分项声明"
+      },
+      "verdicts": {
+        "covered": "供应商声明：本倍率适用",
+        "excluded": "供应商声明：本倍率不适用",
+        "unknown": "适用性待确认",
+        "conflict": "声明相互冲突",
+        "expired": "声明已过期"
+      }
+    },
     catalog: {
       "title": "报价与变化",
       "read": "重新读取已采集结果",

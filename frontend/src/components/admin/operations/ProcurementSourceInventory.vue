@@ -44,12 +44,33 @@
               <article v-for="item in group.items" :key="item.id" class="min-w-0 space-y-2 rounded-lg bg-white p-3 dark:bg-dark-700" data-testid="source-row">
                 <div class="flex flex-wrap items-start justify-between gap-2"><span class="break-words text-sm font-medium">{{ item.account_name || t(p + '.noAccount') }}</span><span :class="statusClass(item)" class="rounded-full px-2 py-1 text-xs font-medium" data-testid="source-conclusion">{{ t(p + '.states.' + item.conclusion) }}</span></div>
                 <p class="break-words text-sm">{{ reason(item.reasons[0]) }}</p>
+                <p v-if="item.evidence" class="break-words text-sm" :class="item.evidence.selection.status === 'mismatch' ? 'text-red-700 dark:text-red-300' : 'text-gray-700 dark:text-gray-300'" data-testid="source-selection">{{ t(p + '.evidence.selectionTitle') }}：{{ t(p + '.evidence.selections.' + item.evidence.selection.status) }}</p>
                 <details class="text-xs text-gray-500"><summary class="cursor-pointer">{{ t(p + '.details') }}</summary><dl class="mt-2 space-y-1">
                   <div><dt class="inline">{{ t(p + '.route') }}：</dt><dd class="inline">{{ t(p + '.routes.' + item.route_identity) }}</dd></div>
                   <div><dt class="inline">{{ t(p + '.fixedGroup') }}：</dt><dd class="inline">{{ t(p + '.unverified') }}</dd></div>
                   <div v-for="code in item.reasons.slice(1)" :key="code"><dd>{{ reason(code) }}</dd></div>
                   <div><dt class="inline">{{ t(p + '.updated') }}：</dt><dd class="inline">{{ item.updated_at }}</dd></div>
                 </dl></details>
+                <details v-if="item.evidence" class="min-w-0 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" data-testid="source-model-evidence">
+                  <summary class="cursor-pointer font-medium">{{ t(p + '.evidence.modelsTitle') }} · {{ t(p + '.evidence.modelStates.' + item.evidence.models.status) }}</summary>
+                  <div class="mt-3 min-w-0 space-y-3">
+                    <p class="text-xs text-gray-500">{{ t(p + '.evidence.scope') }}</p>
+                    <p v-if="item.evidence.selection.group_id" class="break-all text-xs">{{ t(p + '.externalID') }}：{{ item.evidence.selection.group_id }}</p>
+                    <p v-if="item.evidence.selection.observed_at" class="text-xs text-gray-500">{{ t(p + '.evidence.selectionAt') }} {{ formatDateTimeToMinute(item.evidence.selection.observed_at, locale) }} · {{ t(p + '.catalog.expires') }} {{ formatDateTimeToMinute(item.evidence.selection.expires_at, locale) }}</p>
+                    <p v-if="item.evidence.models.observed_at" class="break-words text-xs text-gray-500">{{ t(p + '.evidence.declarationAt') }} {{ formatDateTimeToMinute(item.evidence.models.observed_at, locale) }} · {{ t(p + '.catalog.expires') }} {{ formatDateTimeToMinute(item.evidence.models.expires_at, locale) }} · {{ item.evidence.models.source_version }}</p>
+                    <template v-if="item.evidence.models.entries.length">
+                      <label class="block text-sm">{{ t(p + '.evidence.findModel') }}<input v-model="modelSearch[item.id]" class="input mt-1 w-full" maxlength="200" @input="modelPages[item.id] = 1" /></label>
+                      <article v-for="(entry, index) in visibleModels(item)" :key="index" class="min-w-0 space-y-1 rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-800" data-testid="source-model-scope">
+                        <p class="break-all font-medium">{{ entry.model }}</p><p :class="entry.conclusion === 'conflict' || entry.conclusion === 'excluded' ? 'text-red-700 dark:text-red-300' : 'text-amber-800 dark:text-amber-300'" data-testid="source-model-verdict">{{ t(p + '.evidence.verdicts.' + entry.conclusion) }}</p>
+                        <p class="break-words">{{ t(p + '.evidence.protocol') }}：{{ entry.protocol }} · {{ t(p + '.evidence.tier') }}：{{ entry.service_tier }}</p><p class="break-words">{{ t(p + '.evidence.effort') }}：{{ entry.reasoning_effort }} · {{ t(p + '.evidence.context') }}：{{ entry.context }}</p>
+                        <p v-if="entry.reasoning_summary">{{ t('admin.accounts.upstreamBilling.manualApplicability.summary') }}：{{ entry.reasoning_summary }}</p><p v-if="entry.text_verbosity">{{ t('admin.accounts.upstreamBilling.manualApplicability.verbosity') }}：{{ entry.text_verbosity }}</p><p v-if="entry.include_encrypted_content">{{ t('admin.accounts.upstreamBilling.manualApplicability.encrypted') }}</p>
+                      </article>
+                      <p v-if="!filteredModels(item).length" class="text-xs text-gray-500">{{ t(p + '.evidence.noMatch') }}</p>
+                      <nav v-if="filteredModels(item).length > 10" class="flex flex-wrap items-center gap-2" :aria-label="t(p + '.evidence.pagination')"><button type="button" class="btn btn-secondary" :disabled="(modelPages[item.id] ?? 1) <= 1" @click="modelPages[item.id] = (modelPages[item.id] ?? 1) - 1">{{ t('upstreamOps.previous') }}</button><span>{{ modelPages[item.id] ?? 1 }} / {{ Math.ceil(filteredModels(item).length / 10) }}</span><button type="button" class="btn btn-secondary" :disabled="(modelPages[item.id] ?? 1) * 10 >= filteredModels(item).length" @click="modelPages[item.id] = (modelPages[item.id] ?? 1) + 1">{{ t('upstreamOps.next') }}</button></nav>
+                    </template>
+                    <p v-else class="text-xs text-amber-800 dark:text-amber-300">{{ t(p + '.evidence.noCurrentScopes') }}</p>
+                  </div>
+                </details>
                 <details v-if="item.account_id && !item.account_deleted" class="min-w-0 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600" :data-testid="`source-quote-${item.account_id}`" @toggle="quoteOpened($event, item.account_id)">
                   <summary class="cursor-pointer font-medium">{{ t(p + '.catalog.title') }}</summary>
                   <div class="mt-3 min-w-0 space-y-3">
@@ -120,6 +141,9 @@ const groups = ref<AdminGroup[]>([]), accounts = ref<AccountListItem[]>([]), gro
 const pending = ref<{ item: ProcurementSourceMapping; kind: 'remove' | 'toggle' } | null>(null)
 const quotes = reactive<Record<number, UpstreamGroupCatalogView | undefined>>({}), quoteErrors = reactive<Record<number, boolean>>({}), quoteReading = reactive<Record<number, boolean>>({})
 const quotePages = reactive<Record<number, number>>({}), quoteSearch = reactive<Record<number, string>>({})
+const modelPages = reactive<Record<number, number>>({}), modelSearch = reactive<Record<number, string>>({})
+const filteredModels = (item: ProcurementSourceMapping) => (item.evidence?.models.entries ?? []).filter(row => `${row.model} ${row.service_tier} ${row.protocol}`.toLowerCase().includes((modelSearch[item.id] ?? '').trim().toLowerCase()))
+const visibleModels = (item: ProcurementSourceMapping) => filteredModels(item).slice(((modelPages[item.id] ?? 1) - 1) * 10, (modelPages[item.id] ?? 1) * 10)
 const quoteControllers = new Map<number, AbortController>()
 function quoteOpened(event: Event, id: number) { if ((event.target as HTMLDetailsElement).open && !quotes[id] && !quoteReading[id]) void readQuote(id) }
 async function readQuote(id: number) {
@@ -138,7 +162,7 @@ async function readQuote(id: number) {
 const quoteRate = (rate: number | null) => rate === null ? '—' : String(rate)
 const filteredQuotes = (id: number) => (quotes[id]?.catalog.groups ?? []).filter(row => `${row.id} ${row.name}`.toLowerCase().includes((quoteSearch[id] ?? '').trim().toLowerCase()))
 const visibleQuotes = (id: number) => filteredQuotes(id).slice(((quotePages[id] ?? 1) - 1) * 20, (quotePages[id] ?? 1) * 20)
-function clearQuotes() { quoteControllers.forEach(controller => controller.abort()); quoteControllers.clear(); for (const state of [quotes, quoteErrors, quoteReading, quotePages, quoteSearch]) for (const key of Object.keys(state)) delete state[Number(key)] }
+function clearSourceDetails() { quoteControllers.forEach(controller => controller.abort()); quoteControllers.clear(); for (const state of [quotes, quoteErrors, quoteReading, quotePages, quoteSearch, modelPages, modelSearch]) for (const key of Object.keys(state)) delete state[Number(key)] }
 let alive = true, hasOpened = false, generation = 0, groupsGeneration = 0, accountsGeneration = 0
 let controller: AbortController | undefined, groupsController: AbortController | undefined, accountsController: AbortController | undefined
 watch(() => draft.platform, () => { draft.local_group_id = 0; groups.value = []; groupsController?.abort(); groupsGeneration++ })
@@ -169,7 +193,7 @@ const statusClass = (item: ProcurementSourceMapping) => item.conclusion === 'blo
 const status = (e: unknown) => (e as { status?: number; response?: { status?: number } })?.status ?? (e as { response?: { status?: number } })?.response?.status
 async function load(page = 1, explicit = false): Promise<boolean> {
   const seq = ++generation
-  clearQuotes()
+  clearSourceDetails()
   controller?.abort(); controller = new AbortController()
   reading.value = true; error.value = ''; snapshot.value = null
   try {
@@ -239,5 +263,5 @@ async function mutate() {
   } catch (e) { if (alive) { snapshot.value = null; uncertain.value = true; error.value = status(e) === 409 ? 'conflict' : 'saveUnconfirmed' } }
   finally { if (alive) saving.value = false }
 }
-onBeforeUnmount(() => { alive = false; clearQuotes(); generation++; controller?.abort(); groupsGeneration++; groupsController?.abort(); accountsGeneration++; accountsController?.abort() })
+onBeforeUnmount(() => { alive = false; clearSourceDetails(); generation++; controller?.abort(); groupsGeneration++; groupsController?.abort(); accountsGeneration++; accountsController?.abort() })
 </script>

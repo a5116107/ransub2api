@@ -1,5 +1,45 @@
 export default {
   sources: {
+    evidence: {
+      "selectionTitle": "Purchase-group check",
+      "modelsTitle": "Model quotation scope",
+      "scope": "Supplier declarations and billing-request receipts only: not proof of business routing, model identity or verified margin. Model scopes require matching, current group evidence. Manual declarations remain on the original account page.",
+      "selectionAt": "Group evidence collected:",
+      "declarationAt": "Model declaration observed:",
+      "findModel": "Find model, protocol or service tier",
+      "protocol": "Protocol",
+      "tier": "Service tier",
+      "effort": "Reasoning tier",
+      "context": "Context range",
+      "noMatch": "No model quotation scopes match.",
+      "noCurrentScopes": "No current model quotation scope can be linked. Other groups and older conclusions are not substituted.",
+      "pagination": "Model quotation scope pages",
+      "selections": {
+        "unavailable": "Not currently verifiable",
+        "not_observed": "No collection yet",
+        "failed": "Latest collection failed",
+        "invalid": "Invalid evidence or timestamps",
+        "expired": "Evidence expired",
+        "unverified": "Fixed group not confirmed",
+        "mismatch": "Does not match declaration or binding",
+        "supplier_declared": "Supplier fixed-group declaration matches",
+        "receipt_confirmed": "Billing-request group receipt matches"
+      },
+      "modelStates": {
+        "unavailable": "Previous scopes not shown",
+        "not_declared": "Not declared by supplier",
+        "invalid": "Invalid declaration",
+        "expired": "Declaration expired",
+        "declared": "Per-scope declarations observed"
+      },
+      "verdicts": {
+        "covered": "Supplier declares multiplier applies",
+        "excluded": "Supplier declares multiplier does not apply",
+        "unknown": "Applicability unconfirmed",
+        "conflict": "Conflicting declarations",
+        "expired": "Declaration expired"
+      }
+    },
     catalog: {
       "title": "Quotations and changes",
       "read": "Read collected results",

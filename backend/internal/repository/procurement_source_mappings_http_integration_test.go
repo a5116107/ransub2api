@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
@@ -40,7 +41,7 @@ func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) 
 	}
 	var group, account int64
 	require.NoError(t, db.QueryRow(`INSERT INTO groups(name,platform) VALUES('Source HTTP group','openai') RETURNING id`).Scan(&group))
-	require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials) VALUES('Source HTTP account','openai','apikey','{"api_key":"do-not-disclose-key","base_url":"https://private-source.example/v1"}') RETURNING id`).Scan(&account))
+	require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials) VALUES('Source HTTP account','openai','apikey','{"api_key":"do-not-disclose-key","base_url":"https://private-source.example/v1","header_override_enabled":true,"header_overrides":{"X-Sub2API-Group-ID":"9007199254740993"}}') RETURNING id`).Scan(&account))
 	_, err := db.Exec(`INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, account, group)
 	require.NoError(t, err)
 	var beforeOutbox int64
@@ -66,6 +67,35 @@ func TestProcurementSourceMappingHTTPPersistCASPrivacyAndRecovery(t *testing.T) 
 	require.Contains(t, read.Body.String(), `"version":1`)
 	require.Contains(t, read.Body.String(), `"conclusion":"pending_verification"`)
 	require.Contains(t, read.Body.String(), `"external_group_id":"9007199254740993"`)
+	require.Equal(t, "not_observed", item.Evidence.Selection.Status)
+	// The same exact external ID is confirmed by a call-key billing receipt,
+	// not by the unrelated local source Group's numeric ID or a visible list.
+	at := time.Now().UTC().Add(-time.Minute)
+	fresh := at.Add(time.Hour)
+	snapshot := service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: at, ReceivedAt: &at, FreshUntil: &fresh,
+		Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token", "selected_group_id": item.ExternalGroupID, "resolved_rate_multiplier": 0,
+			"observed_at": at.Format(time.RFC3339Nano), "rate_applicability": map[string]any{"schema_version": 1, "source_version": "http-v1", "observed_at": at, "expires_at": fresh,
+				"source": "private-discarded-source", "entries": []any{map[string]any{"model": "gpt-fixture", "protocol": "responses_http", "service_tier": "priority", "reasoning_effort": "high", "context": "all", "group_rate_applies": false, "conclusion": "covered", "private": "do-not-disclose-model-extra"}}}}}
+	raw, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE accounts SET extra=jsonb_set(COALESCE(extra,'{}'::jsonb),'{upstream_billing_probe}',$2::jsonb) WHERE id=$1`, account, string(raw))
+	require.NoError(t, err)
+	var beforeRead, afterRead string
+	require.NoError(t, db.QueryRow(`SELECT ctid::text||xmin::text||extra::text FROM accounts WHERE id=$1`, account).Scan(&beforeRead))
+	read = run("GET", fmt.Sprintf("/maps/%d", item.ID), "")
+	require.Equal(t, 200, read.Code)
+	require.NoError(t, json.Unmarshal(read.Body.Bytes(), &receipt))
+	require.Equal(t, "receipt_confirmed", receipt.Data.Evidence.Selection.Status)
+	require.Equal(t, item.ExternalGroupID, receipt.Data.Evidence.Selection.GroupID)
+	require.Equal(t, "declared", receipt.Data.Evidence.Models.Status)
+	require.Equal(t, "excluded", receipt.Data.Evidence.Models.Entries[0].Conclusion, "conclusions are recomputed, never copied from the supplier")
+	require.False(t, receipt.Data.Dispatchable)
+	require.Equal(t, "unverified", receipt.Data.FixedGroupSelection)
+	for _, private := range []string{"do-not-disclose-key", "private-source.example", "route_fingerprint", "private-discarded-source", "do-not-disclose-model-extra"} {
+		require.NotContains(t, read.Body.String(), private)
+	}
+	require.NoError(t, db.QueryRow(`SELECT ctid::text||xmin::text||extra::text FROM accounts WHERE id=$1`, account).Scan(&afterRead))
+	require.Equal(t, beforeRead, afterRead, "reading declarations must not persist rewritten conclusions or renew evidence")
 
 	for _, bad := range []string{
 		strings.Replace(body, `"confirm":true`, `"confirm":true,"confirmed":true`, 1),

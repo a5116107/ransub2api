@@ -58,6 +58,8 @@ type ProcurementSourceMapping struct {
 	SourceIdentity      string    `json:"source_identity"`
 	FixedGroupSelection string    `json:"fixed_group_selection"`
 	Dispatchable        bool      `json:"dispatchable"`
+
+	Evidence *ProcurementSourceEvidence `json:"evidence"`
 }
 
 type ProcurementSourceMappingPage struct {

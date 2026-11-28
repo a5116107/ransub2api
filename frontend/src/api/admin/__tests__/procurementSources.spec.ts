@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
-import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, validUpstreamGroupCatalog, type UpstreamGroupCatalogView, type ProcurementSourceMapping } from '../procurementSources'
+import { listProcurementSources, getProcurementSource, createProcurementSource, validProcurementSourceMapping, validProcurementSourcePage, setProcurementSourceEnabled, deleteProcurementSource, getUpstreamGroupCatalog, validUpstreamGroupCatalog, validProcurementSourceEvidence, type ProcurementSourceEvidence, type UpstreamGroupCatalogView, type ProcurementSourceMapping } from '../procurementSources'
 
 vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }))
 export const sourceFixture = (): ProcurementSourceMapping => ({
@@ -17,7 +17,34 @@ const quotation = (): UpstreamGroupCatalogView => ({ version: 1, account_id: 9, 
 }, impact: { sources: [], products: [], truncated: false } })
 beforeEach(() => vi.resetAllMocks())
 
+export const evidenceFixture = (): ProcurementSourceEvidence => ({ version: 1, assessed_at: '2026-11-28T00:01:00Z',
+  selection: { status: 'supplier_declared', source: 'new_api.management', group_id: '9007199254740993', observed_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T01:00:00Z' },
+  models: { status: 'declared', source: 'new_api.pricing', source_version: 'v1', observed_at: '2026-11-28T00:00:00Z', expires_at: '2026-11-28T00:10:00Z', entries: [
+    { model: 'gpt-fixture', protocol: 'responses_http', service_tier: 'priority', reasoning_effort: 'high', context: 'all', group_rate_applies: false, conclusion: 'excluded' }
+  ] }
+})
+
 describe('administrator-only source declaration contract', () => {
+  it('accepts a declaration-level group/model read model without upgrading dispatch eligibility', () => {
+    const evidence = evidenceFixture()
+    expect(validProcurementSourceEvidence(evidence)).toBe(true)
+    expect(validProcurementSourceMapping({ ...sourceFixture(), evidence })).toBe(true)
+    expect(validProcurementSourceMapping({ ...sourceFixture(), evidence, dispatchable: true })).toBe(false)
+    expect(validProcurementSourceMapping({ ...sourceFixture(), evidence, fixed_group_selection: 'verified' })).toBe(false)
+    expect(validProcurementSourceMapping({ ...sourceFixture(), evidence, external_group_id: 'vip' })).toBe(false)
+  })
+  it.each(['version', 'proof-upgrade', 'wrong-source', 'wrong-model-source', 'negative-ttl', 'missing-entry', 'invalid-option', 'stale-entries', 'null-evidence'])('rejects malformed source evidence: %s', mode => {
+    const e = evidenceFixture()
+    if (mode === 'version') Object.assign(e, { version: 2 })
+    if (mode === 'proof-upgrade') Object.assign(e.selection, { status: 'business_verified' })
+    if (mode === 'wrong-source') e.selection.source = 'sub2api.key_billing'
+    if (mode === 'wrong-model-source') e.models.source = 'sub2api.key_billing'
+    if (mode === 'negative-ttl') e.selection.expires_at = e.selection.observed_at
+    if (mode === 'missing-entry') e.models.entries = []
+    if (mode === 'invalid-option') Object.assign(e.models.entries[0]!, { text_verbosity: 'private' })
+    if (mode === 'stale-entries') e.models.status = 'expired'
+    expect(validProcurementSourceMapping({ ...sourceFixture(), evidence: mode === 'null-evidence' ? null : e })).toBe(false)
+  })
   it('reads persisted quotation data with a cancellation signal and keeps explicit zero', async () => {
     const signal = new AbortController().signal
     vi.mocked(apiClient.get).mockResolvedValue({ data: quotation() })

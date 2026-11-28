@@ -1,4 +1,18 @@
 import { apiClient } from '../client'
+import type { UpstreamBillingApplicabilityEntry } from '@/types'
+
+export interface ProcurementSourceEvidence {
+  version: 1; assessed_at: string
+  selection: {
+    status: 'unavailable' | 'not_observed' | 'failed' | 'invalid' | 'expired' | 'unverified' | 'mismatch' | 'supplier_declared' | 'receipt_confirmed'
+    source: 'none' | 'new_api.management' | 'sub2api.key_billing'; group_id: string; observed_at: string | null; expires_at: string | null
+  }
+  models: {
+    status: 'unavailable' | 'not_declared' | 'invalid' | 'expired' | 'declared'
+    source: '' | 'new_api.pricing' | 'sub2api.key_billing'; source_version: string; observed_at: string | null; expires_at: string | null
+    entries: UpstreamBillingApplicabilityEntry[]
+  }
+}
 
 export interface ProcurementSourceMapping {
   id: number; site_id: number; site_code: string; site_name: string; site_revision: number
@@ -10,6 +24,7 @@ export interface ProcurementSourceMapping {
   conclusion: 'pending_verification' | 'paused' | 'blocked' | 'review_required'
   reasons: string[]; route_identity: 'current' | 'changed' | 'unknown'
   source_identity: 'declared'; fixed_group_selection: 'unverified'; dispatchable: false
+  evidence?: ProcurementSourceEvidence
 }
 export interface ProcurementSourcePage {
   version: 1; observed_at: string; items: ProcurementSourceMapping[]; total: number; page: number; page_size: number
@@ -35,6 +50,25 @@ export interface UpstreamGroupCatalogView {
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const integer = (value: unknown, min = 1): value is number => Number.isSafeInteger(value) && (value as number) >= min
 const instant = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
+
+export function validProcurementSourceEvidence(value: unknown): value is ProcurementSourceEvidence {
+  if (!record(value) || value.version !== 1 || !instant(value.assessed_at) || !record(value.selection) || !record(value.models)) return false
+  const s = value.selection, m = value.models
+  const dates = (v: Record<string, unknown>) => (v.observed_at === null || instant(v.observed_at)) && (v.expires_at === null || instant(v.expires_at))
+  const live = (v: Record<string, unknown>) => instant(v.observed_at) && instant(v.expires_at) && Date.parse(v.observed_at) <= Date.parse(value.assessed_at as string) && Date.parse(v.expires_at) > Date.parse(value.assessed_at as string)
+  const token = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[\x21-\x7e]+$/.test(v) && !v.includes('*')
+  const selection = ['supplier_declared', 'receipt_confirmed'].includes(String(s.status))
+  return ['unavailable', 'not_observed', 'failed', 'invalid', 'expired', 'unverified', 'mismatch', 'supplier_declared', 'receipt_confirmed'].includes(String(s.status)) &&
+    ['none', 'new_api.management', 'sub2api.key_billing'].includes(String(s.source)) && typeof s.group_id === 'string' && s.group_id.length <= 256 && dates(s) &&
+    (!selection || s.group_id !== '' && live(s) && (s.status === 'supplier_declared' ? s.source === 'new_api.management' : s.source === 'sub2api.key_billing')) &&
+    ['unavailable', 'not_declared', 'invalid', 'expired', 'declared'].includes(String(m.status)) && ['', 'new_api.pricing', 'sub2api.key_billing'].includes(String(m.source)) && typeof m.source_version === 'string' && dates(m) &&
+    (m.status !== 'declared' || selection && live(m) && token(m.source_version, 128) && (s.source === 'new_api.management' ? m.source === 'new_api.pricing' : m.source === 'sub2api.key_billing')) &&
+    Array.isArray(m.entries) && m.entries.length <= 128 && (m.status === 'declared' ? m.entries.length > 0 : m.entries.length === 0) && m.entries.every(e => record(e) &&
+      token(e.model, 200) && token(e.protocol, 64) && token(e.service_tier, 64) && token(e.reasoning_effort, 64) && token(e.context, 64) &&
+      (e.group_rate_applies === null || typeof e.group_rate_applies === 'boolean') && ['covered', 'excluded', 'unknown', 'conflict', 'expired'].includes(String(e.conclusion)) &&
+      (e.reasoning_summary === undefined || ['none', 'auto', 'concise', 'detailed'].includes(String(e.reasoning_summary))) &&
+      (e.include_encrypted_content === undefined || typeof e.include_encrypted_content === 'boolean') && (e.text_verbosity === undefined || ['low', 'medium', 'high'].includes(String(e.text_verbosity))))
+}
 
 export function validUpstreamGroupCatalog(value: unknown): value is UpstreamGroupCatalogView {
   const rate = (v: unknown) => v === null || typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e6
@@ -68,6 +102,8 @@ export function validProcurementSourceMapping(value: unknown): value is Procurem
     ['pending_verification', 'paused', 'blocked', 'review_required'].includes(String(value.conclusion)) &&
     ['current', 'changed', 'unknown'].includes(String(value.route_identity)) &&
     value.source_identity === 'declared' && value.fixed_group_selection === 'unverified' && value.dispatchable === false &&
+    (value.evidence === undefined || validProcurementSourceEvidence(value.evidence)) &&
+    (value.evidence === undefined || !['supplier_declared', 'receipt_confirmed'].includes(String((value.evidence as ProcurementSourceEvidence).selection.status)) || (value.evidence as ProcurementSourceEvidence).selection.group_id === value.external_group_id) &&
     Array.isArray(value.reasons) && value.reasons.length > 0 && value.reasons.every(reason => typeof reason === 'string') &&
     instant(value.updated_at) && (value.account_id === 0 ? value.id === 0 && value.revision === 0 : integer(value.id) && integer(value.revision))
 }

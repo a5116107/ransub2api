@@ -229,3 +229,60 @@ func TestProcurementSourceMappingFailedInsertRollsBackEntireDeclaration(t *testi
 	require.NoError(t, err)
 	require.False(t, created.Dispatchable)
 }
+
+func TestProcurementSourceMappingInventoryEvidenceAtScale(t *testing.T) {
+	db, _ := UpstreamChannelsTestDatabase(t)
+	repo := NewChannelRepository(db).(service.ProcurementSourceMappingRepository)
+	at := time.Now().UTC().Add(-time.Minute)
+	fresh := at.Add(time.Hour)
+	for i := range 100 {
+		for _, platform := range []string{"openai", "gemini"} {
+			name := fmt.Sprintf("evidence-scale-%03d-%s", i, platform)
+			group, account := seedProcurementSourceMappingRoute(t, db, name, platform)
+			snapshot := service.UpstreamBillingProbeSnapshot{Status: "ok", LastAttemptAt: at, ReceivedAt: &at, FreshUntil: &fresh,
+				Data: map[string]any{"object": "sub2api.key_billing", "schema_version": 1, "billing_scope": "token", "resolved_rate_multiplier": .1, "selected_group_id": "42", "observed_at": at.Format(time.RFC3339Nano),
+					"rate_applicability": map[string]any{"schema_version": 1, "source_version": "scale-1", "observed_at": at, "expires_at": fresh, "entries": []any{map[string]any{
+						"model": platform + "-fixture", "protocol": "responses_http", "service_tier": "unspecified", "reasoning_effort": "unspecified", "context": "all", "group_rate_applies": true}}}}}
+			raw, err := json.Marshal(snapshot)
+			require.NoError(t, err)
+			_, err = db.Exec(`UPDATE accounts SET credentials=credentials||'{"header_override_enabled":true,"header_overrides":{"X-Sub2API-Group-ID":"42"}}'::jsonb,extra=jsonb_set(COALESCE(extra,'{}'::jsonb),'{upstream_billing_probe}',$2::jsonb) WHERE id=$1`, account, string(raw))
+			require.NoError(t, err)
+			_, err = repo.CreateProcurementSourceMapping(t.Context(), domain.ProcurementSourceMappingCommand{Version: 1, SiteCode: fmt.Sprintf("evidence-scale-%03d", i), SiteName: fmt.Sprintf("Supplier %03d", i), Platform: platform, ExternalGroupID: "42", ExternalGroupName: "Same group name", LocalGroupID: group, AccountID: account, Confirm: true})
+			require.NoError(t, err)
+		}
+	}
+	var before, after string
+	digest := `SELECT md5(string_agg(id::text||ctid::text||xmin::text||extra::text,'' ORDER BY id)) FROM accounts`
+	require.NoError(t, db.QueryRow(digest).Scan(&before))
+	start := time.Now()
+	page, err := repo.ListProcurementSourceMappings(t.Context(), "evidence-scale", "", 1, 100)
+	require.NoError(t, err)
+	require.EqualValues(t, 200, page.Total)
+	require.Len(t, page.Items, 100)
+	for _, row := range page.Items {
+		if row.Platform == "openai" {
+			require.Equal(t, "receipt_confirmed", row.Evidence.Selection.Status)
+			require.Equal(t, "42", row.Evidence.Selection.GroupID)
+			require.Equal(t, "openai-fixture", row.Evidence.Models.Entries[0].Model)
+		} else {
+			// Gemini's existing forwarder does not apply these header
+			// overrides. A stored receipt must not invent routing support.
+			require.Equal(t, "unverified", row.Evidence.Selection.Status)
+			require.Empty(t, row.Evidence.Models.Entries)
+		}
+		require.False(t, row.Dispatchable)
+	}
+	next, err := repo.ListProcurementSourceMappings(t.Context(), "evidence-scale", "", 2, 100)
+	require.NoError(t, err)
+	require.Len(t, next.Items, 100)
+	require.NotEqual(t, page.Items[0].ID, next.Items[0].ID)
+	filtered, err := repo.ListProcurementSourceMappings(t.Context(), "evidence-scale-097", "gemini", 1, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, filtered.Total)
+	require.Equal(t, "gemini", filtered.Items[0].Platform)
+	require.Equal(t, "unverified", filtered.Items[0].Evidence.Selection.Status)
+	require.Empty(t, filtered.Items[0].Evidence.Models.Entries)
+	require.NoError(t, db.QueryRow(digest).Scan(&after))
+	require.Equal(t, before, after, "registry evidence reads must not touch accounts or renew quotation TTLs")
+	t.Logf("100 sites / 200 explicit routes, two 100-row pages and vendor/search read: %s", time.Since(start))
+}
